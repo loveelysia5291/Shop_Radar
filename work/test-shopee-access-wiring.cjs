@@ -1,0 +1,70 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const root = 'app/src/main/java/com/example/shopradar/';
+const read = name => fs.readFileSync(root + name + '.kt', 'utf8');
+const reader = read('MarketplaceCapture'), main = read('MainActivity'), login = read('ShopeeLoginActivity');
+const policy = read('ShopeeLoginPolicy'), config = read('ShopeeWebConfiguration');
+const guest = fs.readFileSync('app/src/debug/assets/shopee-guest-search-debug.js', 'utf8');
+const release = fs.readFileSync('app/src/release/java/com/example/shopradar/ShopeeGuestSearch.kt', 'utf8');
+assert.match(reader, /if \(!navigation.isForMainFrame\) return false/);
+assert.match(reader, /stopForShopeeAccess\(uri.toString\(\)\)/);
+assert.equal((reader.match(/stopForShopeeAccess\(url\)/g) || []).length, 3);
+assert.match(reader, /stopForShopeeAccess\(web.url.orEmpty\(\)\)/);
+assert.ok(reader.indexOf('stopForShopeeAccess(web.url.orEmpty())') < reader.indexOf('evaluate(web, captureScript)'));
+assert.match(reader, /guestEmptyAttempted = true/);
+assert.match(reader, /if \(canUseWeb\(\) && retainedProducts.isEmpty\(\)\) stopForShopeeAccess/);
+assert.match(reader, /\}, 1_200\)/);
+const access = reader.slice(reader.indexOf('private fun stopForShopeeAccess'), reader.indexOf('private fun awaitYahooRedirect'));
+assert.match(access, /!request.scanSubscription && !request.backgroundRead/);
+assert.doesNotMatch(access, /startActivity|evaluateJavascript|loadUrl|CookieManager/);
+assert.match(main, /LaunchedEffect\(shopeeSearchRetry, foreground\)/);
+assert.match(main, /shouldAutoRecover\(retry, foreground, recovery\) \|\| shopeeRecoveryLaunching/);
+assert.match(main, /shopeeRecoveryLauncher.launch\(Intent\(context, ShopeeLoginActivity::class.java\)/);
+assert.match(main, /officialRecoveryAttempt = retry.officialRecoveryAttempt \+ 1/);
+assert.match(main, /result.resultCode == android.app.Activity.RESULT_OK/);
+assert.match(policy, /foreground && request.market == Market.SHOPEE && request.quickSearch && !request.backgroundRead/);
+assert.match(policy, /request.officialRecoveryAttempt == 0/);
+assert.match(login, /searchReturned = false/);
+assert.match(login, /searchReturned = ShopeeLoginPolicy.completedSearch\(url, view.url.orEmpty\(\), returnSearchUrl, accessStarted, pageFailed\)/);
+assert.match(login, /homeReturned \|\| if \(recoveryFlow\) searchReturned/);
+assert.match(login, /homeReturned = ShopeeLoginPolicy.completedHome\(url, view.url.orEmpty\(\), accessStarted, pageFailed\)/);
+assert.match(login, /if \(homeReturned\) ShopeeWebConfiguration.loginReturnedHome\(\)/);
+const finishCallback = login.split('override fun onPageFinished')[1].split('override fun onReceivedError')[0];
+assert.match(finishCallback, /if \(!webAlive \|\| isFinishing\) return/);
+assert.match(finishCallback, /if \(homeReturned \|\| searchReturned\) \{[\s\S]*?complete\(\)[\s\S]*?return/);
+assert.match(login, /private fun complete\(\) \{\s*if \(isFinishing\) return/);
+assert.doesNotMatch(login, /按左箭頭|再按返回搜尋/);
+assert.match(config, /fun loginReturnedHome\(\) \{ homeLoginConfirmed = true; recovery = null \}/);
+assert.match(config, /fun canSearch\(\): Boolean = homeLoginConfirmed \|\|/);
+assert.match(login, /!ShopeeLoginPolicy.requiresAuthentication\(web.url.orEmpty\(\)\)/);
+assert.doesNotMatch(login, /web.loadUrl\(returnSearchUrl\)/);
+assert.doesNotMatch(login, /evaluateJavascript|addJavascriptInterface|outerHTML|CaptureAssets|CaptureDiagnostics/);
+assert.doesNotMatch(read('RefreshRunner'), /shopeeRecoveryLauncher|startActivity/);
+assert.match(release, /fun blockLoginRedirect[\s\S]*?= false/);
+assert.doesNotMatch(release, /assets.open|CaptureAssets.read|evaluateJavascript|java.net.URI/);
+assert.match(config, /cachedUserAgent \?: WebSettings.getDefaultUserAgent/);
+assert.match(read('CaptureSupport'), /scripts.getOrPut\(market\)/);
+assert.match(main, /DisposableEffect\(context, dark\)/);
+assert.match(main, /mutableStateOf<List<SearchHistoryEntry>>\(emptyList\(\)\)/);
+assert.match(main, /fun saveSearchHistory\(\) \{\s*ensureSearchHistoryLoaded\(\)/);
+assert.match(main, /if \(it\) ensureSearchHistoryLoaded\(\)/);
+assert.doesNotMatch(main, /mutableStateOf\(auctionStore.username/);
+assert.doesNotMatch(guest.replace(/^\s*\/\/.*$/gm, ''), /document.cookie|localStorage|sessionStorage|fetch\s*\(|XMLHttpRequest|history\.|location\.(?:assign|replace)|\.click\s*\(/);
+
+// Lightweight DOM model: verifies the original Debug overlay experiment without a browser process.
+function check({text='登入以繼續', product=true, form=false, url='https://shopee.tw/search?keyword=phone', href='/product/123/456'} = {}, hidden) {
+  const modal = {hidden:false, textContent:text, querySelector:()=>form ? {} : null, style:{setProperty(){}}};
+  const style = {overflow:'hidden', removeProperty(){this.overflow='';}};
+  const card = {getAttribute:()=>href, querySelector:()=>({}), textContent:'公開商品 NT$100'};
+  const location = new URL(url);
+  const document = {documentElement:{style}, body:{style}, querySelectorAll:selector=>selector==='a[href]' ? product ? [card] : [] : [modal]};
+  vm.runInNewContext(guest, {URL, location, document, getComputedStyle:node=>({display:node.hidden ? 'none' : 'block'})});
+  vm.runInNewContext(guest, {URL, location, document, getComputedStyle:node=>({display:node.hidden ? 'none' : 'block'})});
+  assert.equal(modal.hidden, hidden);
+}
+check({}, true);
+for (const options of [{product:false}, {text:'登入驗證 captcha'}, {text:'登入 language 語言'}, {form:true},
+  {url:'https://shopee.tw/buyer/login'}, {url:'https://shopee.tw/verify/traffic/error'},
+  {url:'https://shopee.tw.evil.test/search'}, {href:'https://evil.test/product/123/456'}]) check(options, false);
+console.log('PASS: bounded Debug login interception, public-only overlay VM fixtures, pre-navigation official handoff, foreground-only single recovery, frozen search completion, no auth DOM collection; cached scripts/UA and deferred startup reads. Device validation remains required.');

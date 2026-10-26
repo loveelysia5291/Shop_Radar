@@ -1,0 +1,16 @@
+const fs = require('node:fs'), assert = require('node:assert/strict');
+const root = 'app/src/main/java/com/example/shopradar/';
+const read = name => fs.readFileSync(root + name + '.kt', 'utf8');
+const popup = read('CardMenuPopup'), settings = read('RefreshSettingsUi');
+assert.match(popup, /\.height\(height\)/, 'Reserve the same panel height before entering settings');
+assert.match(popup, /surfaceVariant\.copy\(alpha = 1f\)/, 'Opaque distinct panel background');
+assert.match(popup, /border = BorderStroke/);
+assert.match(popup, /exit = fadeOut/);
+assert.match(settings, /Crossfade\(targetState/);
+assert.match(settings, /BackgroundDeliverySettingsContent\(\)/);
+assert.match(settings, /backgroundSettings && cardBounds == null/,'Card settings must not open a second larger dialog');
+assert.match(settings, /PairedActions\("取消",[\s\S]*?"儲存", save, valid\)/);
+const actions = read('PairedActions');
+assert.equal((actions.match(/TextButton\(/g) || []).length, 2);
+assert.equal((actions.match(/Modifier\.weight\(1f\)/g) || []).length, 2);
+console.log('PASS: fixed-size opaque card panel, enter/exit/content transitions, embedded notification settings, paired actions. Visual device QA remains required.');

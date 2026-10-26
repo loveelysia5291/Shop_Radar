@@ -1,0 +1,40 @@
+# Lock files
+*.lock
+
+# Built application and intermediate files
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Android Studio / IntelliJ IDEA
+*.iml
+.idea/
+.gradle/
+.kotlin/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Workspace temp / caches / artifacts
+outputs/
+.codex-remote-attachments/
+work/gradle-home/
+work/gradle-native/
+work/runtime-temp/
+work/java-home/
+work/android-home/
+work/fixtures/
+work/search-streaming-unit-results/
+work/*.png
+work/*.html
+work/*.json
+

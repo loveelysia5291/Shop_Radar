@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A visibly tinted full background, rather than a nearly white accent. -->
+    <color name="shopradar_icon_monet_background">@android:color/system_accent1_200</color>
+    <color name="shopradar_icon_monet_foreground">@android:color/system_accent1_800</color>
+</resources>

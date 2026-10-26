@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Keep the wallpaper hue obvious even against a dark Settings surface. -->
+    <color name="shopradar_icon_monet_background">@android:color/system_accent1_300</color>
+    <color name="shopradar_icon_monet_foreground">@android:color/system_accent1_900</color>
+</resources>

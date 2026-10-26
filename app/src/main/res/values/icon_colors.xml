@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ShopRadar's original icon palette. -->
+    <color name="shopradar_icon_background">#F3F0FF</color>
+</resources>

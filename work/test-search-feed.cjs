@@ -1,0 +1,42 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const script = fs.readFileSync('app/src/main/assets/search-feed-state.js', 'utf8');
+function fixture({ inner = false, busy = false, ready = true } = {}) {
+  const root = { scrollTop: 0, scrollHeight: 1800, clientHeight: 600 };
+  const box = { scrollTop: 0, scrollHeight: 1400, clientHeight: 400, parentElement: root, overflowY: 'auto' };
+  const rect = { width: 100, height: 100 };
+  const node = { getClientRects: () => [rect], closest: () => null };
+  const card = { ...node, parentElement: inner ? box : root, getAttribute: () => '/product/123/456' };
+  const document = { scrollingElement: root, documentElement: root, readyState: ready ? 'complete' : 'loading',
+    querySelectorAll: q => q === 'a[href]' ? [card] : busy ? [node] : [] };
+  const window = { innerHeight: 600, scrollBy: (_, delta) => { root.scrollTop = Math.min(1200, root.scrollTop + delta); } };
+  const ctx = vm.createContext({document, window, getComputedStyle: node => ({visibility: 'visible', overflowY: node.overflowY || 'visible'})});
+  return {root, box, window, read: () => JSON.parse(vm.runInContext(script, ctx))};
+}
+let f = fixture();
+assert.equal(f.read().atBottom, false);
+f.window.__shopRadarFeedScroll();
+assert.equal(f.root.scrollTop, 420, 'advance by part of viewport so lazy rows are visited');
+f.root.scrollTop = 1200;
+assert.equal(f.read().atBottom, true);
+f.root.scrollHeight += 600;
+assert.equal(f.read().atBottom, false, 'new rows invalidate bottom');
+f = fixture();
+f.window.__shopRadarFeedFast = true;
+f.read(); f.window.__shopRadarFeedScroll();
+assert.equal(f.root.scrollTop, 540, 'fast first batch overlaps the previous viewport, never skips a full viewport');
+f = fixture({inner: true});
+f.window.__shopRadarFeedFast = true;
+f.read(); f.window.__shopRadarFeedScroll();
+assert.equal(f.box.scrollTop, 360);
+f = fixture({inner: true});
+f.read(); f.window.__shopRadarFeedScroll();
+assert.equal(f.box.scrollTop, 280);
+assert.equal(f.root.scrollTop, 0, 'inner mobile list is the scroll target');
+f.box.scrollTop = 1000;
+assert.equal(f.read().atBottom, true);
+assert.equal(fixture({busy:true}).read().busy, true);
+assert.equal(fixture({ready:false}).read().ready, false);
+assert.doesNotMatch(script, /\.click\(|fetch\(|location\s*=/);
+console.log('PASS: continuous feed observes document/inner scrolling, lazy growth, busy/loading state without clicking or navigating.');

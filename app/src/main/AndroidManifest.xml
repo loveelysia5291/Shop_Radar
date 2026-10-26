@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application
+        android:name=".RadarApplication"
+        android:allowBackup="true"
+        android:enableOnBackInvokedCallback="false"
+        android:icon="@drawable/ic_launcher"
+        android:label="購物雷達"
+        android:roundIcon="@drawable/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ShopRadar">
+        <provider android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup" android:exported="false" tools:node="merge">
+            <meta-data android:name="androidx.work.WorkManagerInitializer" tools:node="remove" />
+        </provider>
+        <!-- Compose reflows on window resize without discarding an active capture/results. -->
+        <activity android:name=".MainActivity" android:exported="true"
+            android:enableOnBackInvokedCallback="false"
+            android:theme="@style/Theme.ShopRadar.Launch"
+            android:launchMode="singleTask"
+            android:documentLaunchMode="never"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".MarketWebActivity" android:exported="false" android:windowSoftInputMode="adjustResize" android:hardwareAccelerated="true" />
+        <activity android:name=".ShopeeLoginActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" android:hardwareAccelerated="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
+        <activity android:name=".FacebookCardActivity" android:exported="false" android:hardwareAccelerated="true" />
+    </application>
+</manifest>

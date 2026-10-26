@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="@color/shopradar_icon_background" android:pathData="M54,0A54,54 0,1 1,54 108A54,54 0,1 1,54 0Z" />
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="1.15" android:scaleY="1.15">
+    <path android:fillColor="#423065"
+        android:pathData="M54,21A33,33 0,1 1,54 87A33,33 0,1 1,54 21Z" />
+    <path android:fillColor="#51417B"
+        android:pathData="M54,24A30,30 0,1 1,54 84A30,30 0,1 1,54 24Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#C6BEFF"
+        android:strokeWidth="2.4"
+        android:pathData="M54,27A27,27 0,1 1,54 81A27,27 0,1 1,54 27Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#C6BEFF"
+        android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M54,23V33M54,75V85M23,54H33M75,54H85" />
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.2" android:strokeLineCap="round"
+        android:pathData="M47,46V45C47,41.13 50.13,38 54,38C57.87,38 61,41.13 61,45V46" />
+    <path android:fillColor="#FFFFFF" android:fillType="evenOdd"
+        android:pathData="M42.5,46H65.5C66.4,46 67.1,46.65 67.2,47.5L69,65.5C69.2,67.45 67.65,69 65.5,69H42.5C40.35,69 38.8,67.45 39,65.5L40.8,47.5C40.9,46.65 41.6,46 42.5,46ZM47,47.5A1.5,1.5 0,1 0,47 50.5A1.5,1.5 0,1 0,47 47.5ZM61,47.5A1.5,1.5 0,1 0,61 50.5A1.5,1.5 0,1 0,61 47.5Z" />
+    </group>
+</vector>

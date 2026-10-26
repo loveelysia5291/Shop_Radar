@@ -1,0 +1,16 @@
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const read = p => fs.readFileSync(p, 'utf8');
+const base = 'app/src/';
+const debug = read(base + 'debug/java/com/example/shopradar/DebugNotificationTest.kt');
+const release = read(base + 'release/java/com/example/shopradar/DebugNotificationTest.kt');
+const worker = read(base + 'main/java/com/example/shopradar/BackgroundDeliveryCheck.kt');
+assert.match(debug, /schedule\(context, 15 \* 60L\)/);
+assert.match(debug, /POST_NOTIFICATIONS/);
+assert.match(debug, /probeFinishedAt/);
+assert.doesNotMatch(release, /WorkManager|BackgroundDeliveryCheck|DropdownMenuItem|AlertDialog/);
+assert.match(worker, /setInitialDelay\(delaySeconds, TimeUnit.SECONDS\)/);
+assert.match(worker, /ExistingWorkPolicy.REPLACE/);
+assert.match(worker, /remove\("probeFinishedAt"\)/);
+assert.match(read(base + 'main/java/com/example/shopradar/MainActivity.kt'), /DebugNotificationTestMenu/);
+console.log('Debug notification probe wiring checks passed.');

@@ -1,0 +1,53 @@
+// Run the existing JUnit suites without a socket-connected Gradle test worker.
+// Same compiled test classes/runtime classpath; separate reports, never stale Gradle reports.
+gradle.projectsEvaluated {
+    def app = gradle.rootProject.project(':app')
+    ['Debug', 'Release'].each { variant ->
+        def original = app.tasks.named("test${variant}UnitTest").get()
+        app.tasks.register("test${variant}LocalUnitTest") {
+            dependsOn original.testClassesDirs, original.classpath
+            doLast {
+                def urls = original.classpath.files.collect { it.toURI().toURL() } as URL[]
+                def loader = new URLClassLoader(urls, ClassLoader.getPlatformClassLoader())
+                def previous = Thread.currentThread().contextClassLoader
+                def output = new File(gradle.rootProject.projectDir, "work/search-streaming-unit-results/${variant}")
+                output.mkdirs()
+                int tests = 0, failed = 0, suites = 0
+                try {
+                    Thread.currentThread().contextClassLoader = loader
+                    def junit = loader.loadClass('org.junit.runner.JUnitCore')
+                    def run = junit.getMethod('run', Class[].class)
+                    def names = new TreeSet<String>()
+                    original.testClassesDirs.files.each { directory ->
+                        if (directory.exists()) directory.eachFileRecurse { file ->
+                            if (file.name.endsWith('Test.class') && !file.name.contains('$'))
+                                names.add(directory.toPath().relativize(file.toPath()).toString().replace('\\', '.').replace('/', '.').replaceAll(/\.class$/, ''))
+                        }
+                    }
+                    if (names.isEmpty()) throw new GradleException('No compiled JUnit suites found')
+                    names.each { name ->
+                        def result = run.invoke(junit.getConstructor().newInstance(), [[loader.loadClass(name)] as Class[]] as Object[])
+                        tests += result.runCount; failed += result.failureCount; suites++
+                        new File(output, "TEST-${name}.xml").withWriter('UTF-8') { writer ->
+                            def xml = new groovy.xml.MarkupBuilder(writer)
+                            xml.testsuite(name: name, tests: result.runCount, failures: result.failureCount, errors: 0,
+                                skipped: result.ignoreCount, time: result.runTime / 1000.0) {
+                                result.failures.each { f ->
+                                    testcase(name: f.description.methodName ?: 'initialization', classname: name) {
+                                        failure(message: f.message ?: '', type: f.exception.class.name, f.trace)
+                                    }
+                                }
+                            }
+                        }
+                        result.failures.each { println "FAIL ${variant}: ${it.trace}" }
+                    }
+                } finally {
+                    Thread.currentThread().contextClassLoader = previous
+                    loader.close()
+                }
+                println "LOCAL JUNIT ${variant}: ${tests} tests / ${suites} suites / ${failed} failures"
+                if (failed > 0) throw new GradleException("${variant}: ${failed} unit tests failed")
+            }
+        }
+    }
+}
