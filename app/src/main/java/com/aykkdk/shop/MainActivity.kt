@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.Manifest
 import android.content.Intent
@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
