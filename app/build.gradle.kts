@@ -22,13 +22,29 @@ android {
         targetCompatibility = JavaVersion.VERSION_1_8
     }
     buildFeatures { compose = true }
-    // Optional existing debug key keeps updates compatible with the locally installed debug APK.
-    providers.gradleProperty("debugKeystorePath").orNull?.let { path ->
-        signingConfigs.getByName("debug").storeFile = file(path)
+
+    signingConfigs {
+        providers.gradleProperty("debugKeystorePath").orNull?.let { path ->
+            getByName("debug").storeFile = file(path)
+        }
+        create("release") {
+            val keyPath = providers.gradleProperty("releaseKeystorePath").orNull
+                ?: System.getenv("RELEASE_KEYSTORE_PATH")
+            if (keyPath != null) {
+                storeFile = file(keyPath)
+                storePassword = providers.gradleProperty("releaseKeystorePassword").orNull
+                    ?: System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = providers.gradleProperty("releaseKeyAlias").orNull
+                    ?: System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = providers.gradleProperty("releaseKeyPassword").orNull
+                    ?: System.getenv("RELEASE_KEY_PASSWORD")
+            }
+        }
     }
+
     buildTypes {
         getByName("debug") {
-            versionNameSuffix = "-debug-back-20261019"
+            versionNameSuffix = "-debug"
         }
         getByName("release") {
             isMinifyEnabled = true
@@ -36,8 +52,8 @@ android {
             isShrinkResources = true
             isDebuggable = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Local upgrade APK: retain the existing installation's certificate.
-            signingConfig = signingConfigs.getByName("debug")
+            val releaseSign = signingConfigs.getByName("release")
+            signingConfig = if (releaseSign.storeFile?.exists() == true) releaseSign else signingConfigs.getByName("debug")
         }
     }
 }
