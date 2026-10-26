@@ -1,4 +1,4 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const asset = name => fs.readFileSync('app/src/main/assets/'+name,'utf8');
@@ -68,7 +68,7 @@ function equal(a,b,message){assert.deepEqual(a,b,message);checks++;}
     await load(fb,'<main><div><h1>電腦主機含電腦螢幕</h1><span><span class="html-span"><abbr aria-label="1 週前"><span>1 週前</span></abbr></span>於<a href="/marketplace/114987875182625/">屏東市, 屏東縣</a>上架</span></div></main>');
     await page.evaluate(helpers);await page.evaluate(url=>window.__shopRadarFacebookListing={url,title:''},fb);
     equal(JSON.parse(await page.evaluate(asset('extract-facebook-listing-time.js'))).listedAt,'1 週前','Verified subscription detail uses the actual primary header even without a cached title');
-    const reader=fs.readFileSync('app/src/main/java/com/example/shopradar/PublicProductWebReader.kt','utf8');
+    const reader=fs.readFileSync('app/src/main/java/com/aykkdk/shop/PublicProductWebReader.kt','utf8');
     assert.match(reader,/if \(market == Market.FACEBOOK\) "extract-facebook-listing-time.js" else "extract-public-listing-time.js"/);checks++;
     assert.match(reader,/listedAtEpochMillis = data.optLong/);checks++;
     await load(fb,json({__typename:'MarketplaceListing',id:'1120292097099668',listing_creation_time:1767323045}));
@@ -84,9 +84,9 @@ function equal(a,b,message){assert.deepEqual(a,b,message);checks++;}
     await load(iopen,'<div><h1>手機</h1><p>上架時間：2026/01/02</p></div>');
     const native='(function(){'+helpers+'window.__shopRadarFacebookListing = '+JSON.stringify({url:iopen,title:''})+';\nvar listingDate = JSON.parse('+asset('extract-public-listing-time.js')+');return JSON.stringify({listedAt:listingDate.listedAt});})()';
     equal(JSON.parse(await page.evaluate(native)).listedAt,'2026-01-02');
-    const capture=fs.readFileSync('app/src/main/java/com/example/shopradar/CaptureSupport.kt','utf8');
+    const capture=fs.readFileSync('app/src/main/java/com/aykkdk/shop/CaptureSupport.kt','utf8');
     assert.match(capture,/Market.FACEBOOK, Market.SHOPEE, Market.IOPEN/);checks++;
-    const main=fs.readFileSync('app/src/main/java/com/example/shopradar/MainActivity.kt','utf8');
+    const main=fs.readFileSync('app/src/main/java/com/aykkdk/shop/MainActivity.kt','utf8');
     assert.doesNotMatch(main,/全部平台|EASYSELL/);checks++;
     console.log('PASS: '+checks+' listing-time, identity, removal and negative-evidence assertions.');
   } finally {await browser.close();}

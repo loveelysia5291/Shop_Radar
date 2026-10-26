@@ -1,6 +1,6 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const read = name => fs.readFileSync(`app/src/main/java/com/example/shopradar/${name}.kt`, 'utf8');
+const read = name => fs.readFileSync(`app/src/main/java/com/aykkdk/shop/${name}.kt`, 'utf8');
 const login = read('ShopeeLoginActivity');
 const capture = read('MarketplaceCapture');
 const config = read('ShopeeWebConfiguration');
@@ -48,7 +48,7 @@ assert.match(capture, /requireRecovery\(url, request\.url\)/);
 assert.match(capture, /accessRequired = true/);
 assert.match(capture, /if \(!accessRequired\) diagnostics\.step/);
 assert.match(capture, /diagnostics\.finishAccess\(report\)/);
-const html = fs.readFileSync('app/src/debug/java/com/example/shopradar/MarketplaceHtmlDebugSession.kt', 'utf8');
+const html = fs.readFileSync('app/src/debug/java/com/aykkdk/shop/MarketplaceHtmlDebugSession.kt', 'utf8');
 const access = html.slice(html.indexOf('fun finishAccess('), html.indexOf('private fun publish('));
 assert.doesNotMatch(access, /take\(|evaluateJavascript/);
 assert.match(access, /publish\(report, callback\)/);

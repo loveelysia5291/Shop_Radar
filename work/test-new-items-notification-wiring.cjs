@@ -1,6 +1,6 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const root = 'app/src/main/java/com/example/shopradar/';
+const root = 'app/src/main/java/com/aykkdk/shop/';
 const main = fs.readFileSync(root + 'MainActivity.kt', 'utf8');
 const runner = fs.readFileSync(root + 'RefreshRunner.kt', 'utf8');
 const update = fs.readFileSync(root + 'ShopRefreshUpdate.kt', 'utf8');

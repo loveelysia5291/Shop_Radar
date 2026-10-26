@@ -5,12 +5,12 @@ plugins {
 }
 
 android {
-    namespace = "com.example.shopradar"
+    namespace = "com.aykkdk.shop"
     compileSdk = 34
     buildToolsVersion = "37.0.0"
 
     defaultConfig {
-        applicationId = "com.example.shopradar"
+        applicationId = "com.aykkdk.shop"
         minSdk = 24
         targetSdk = 34
         versionCode = 29

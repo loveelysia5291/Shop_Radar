@@ -1,7 +1,7 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const assert = require('node:assert/strict');
-const gesture = fs.readFileSync('app/src/main/java/com/example/shopradar/PageSwipeGesture.kt', 'utf8');
-const main = fs.readFileSync('app/src/main/java/com/example/shopradar/MainActivity.kt', 'utf8');
+const gesture = fs.readFileSync('app/src/main/java/com/aykkdk/shop/PageSwipeGesture.kt', 'utf8');
+const main = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MainActivity.kt', 'utf8');
 assert(gesture.includes('pager.scroll(MutatePriority.UserInput)'));
 assert(gesture.includes('for (delta in events)'));
 assert(gesture.includes('intent.dragStartDelta'));

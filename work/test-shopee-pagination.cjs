@@ -1,10 +1,10 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const source = fs.readFileSync('app/src/main/assets/extract-shopee-products.js', 'utf8');
-const capture = fs.readFileSync('app/src/main/java/com/example/shopradar/MarketplaceCapture.kt', 'utf8');
-const main = fs.readFileSync('app/src/main/java/com/example/shopradar/MainActivity.kt', 'utf8');
-const market = fs.readFileSync('app/src/main/java/com/example/shopradar/Market.kt', 'utf8');
+const capture = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MarketplaceCapture.kt', 'utf8');
+const main = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MainActivity.kt', 'utf8');
+const market = fs.readFileSync('app/src/main/java/com/aykkdk/shop/Market.kt', 'utf8');
 const card = id => `<a href="/product/100/${id}"><h3>Phone ${id}</h3><span>$${id}</span></a>`;
 (async () => {
   const browser = await chromium.launch({channel:'msedge', headless:true});

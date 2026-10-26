@@ -1,10 +1,10 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const root = 'app/src/main/res/';
 // Verify every direct Compose drawable reference across all version-qualified
 // resources. A launcher icon can compile correctly but still crash painterResource.
-const sourceRoot = 'app/src/main/java/com/example/shopradar/';
+const sourceRoot = 'app/src/main/java/com/aykkdk/shop/';
 for (const sourceFile of fs.readdirSync(sourceRoot).filter(name => name.endsWith('.kt'))) {
   const source = fs.readFileSync(sourceRoot + sourceFile, 'utf8');
   for (const [, name] of source.matchAll(/painterResource\(R\.drawable\.(\w+)\)/g)) {

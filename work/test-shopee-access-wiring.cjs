@@ -1,12 +1,12 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const root = 'app/src/main/java/com/example/shopradar/';
+const root = 'app/src/main/java/com/aykkdk/shop/';
 const read = name => fs.readFileSync(root + name + '.kt', 'utf8');
 const reader = read('MarketplaceCapture'), main = read('MainActivity'), login = read('ShopeeLoginActivity');
 const policy = read('ShopeeLoginPolicy'), config = read('ShopeeWebConfiguration');
 const guest = fs.readFileSync('app/src/debug/assets/shopee-guest-search-debug.js', 'utf8');
-const release = fs.readFileSync('app/src/release/java/com/example/shopradar/ShopeeGuestSearch.kt', 'utf8');
+const release = fs.readFileSync('app/src/release/java/com/aykkdk/shop/ShopeeGuestSearch.kt', 'utf8');
 assert.match(reader, /if \(!navigation.isForMainFrame\) return false/);
 assert.match(reader, /stopForShopeeAccess\(uri.toString\(\)\)/);
 assert.equal((reader.match(/stopForShopeeAccess\(url\)/g) || []).length, 3);

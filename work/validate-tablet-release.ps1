@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $env:TEMP = Join-Path $PSScriptRoot 'runtime-temp'
 $env:TMP = $env:TEMP
 $env:JAVA_TOOL_OPTIONS = '-Duser.home=C:/Users/Elysia/Documents/Codex/2026-09-26/new-chat/work/java-home -Djava.io.tmpdir=C:/Users/Elysia/Documents/Codex/2026-09-26/new-chat/work/runtime-temp'
@@ -8,7 +8,7 @@ $sdkTools = 'C:/Users/Elysia/AppData/Local/Android/build-tools/37.0.0'
 
 $badging = & "$sdkTools/aapt2.exe" dump badging $apk
 if ($LASTEXITCODE -ne 0) { throw 'APK badging check failed' }
-if (($badging -join "`n") -notmatch "name='com.example.shopradar'") { throw 'Unexpected package' }
+if (($badging -join "`n") -notmatch "name='com.aykkdk.shop'") { throw 'Unexpected package' }
 if (($badging -join "`n") -match 'application-debuggable') { throw 'Debuggable APK is not a release artifact' }
 $manifest = & "$sdkTools/aapt2.exe" dump xmltree $apk --file AndroidManifest.xml
 if ($LASTEXITCODE -ne 0) { throw 'Manifest check failed' }

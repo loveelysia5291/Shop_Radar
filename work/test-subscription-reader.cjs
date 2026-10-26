@@ -1,4 +1,4 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 
@@ -81,7 +81,7 @@ const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-
       assert.deepEqual(times, expected);
       await page.close();
     }
-    const main = fs.readFileSync('app/src/main/java/com/example/shopradar/MainActivity.kt', 'utf8');
+    const main = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MainActivity.kt', 'utf8');
     assert.match(main, /5000L - \(android\.os\.SystemClock\.elapsedRealtime\(\) - newItemsPageStartedAt\)/);
     assert.match(main, /subscriptionShopSearching && !showNewItemsPage/);
     assert.match(main, /onProgress = \{ found -> observeSubscriptionProgress\(capture, found\) \}/);

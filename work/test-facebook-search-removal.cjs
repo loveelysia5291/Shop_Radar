@@ -1,7 +1,7 @@
-// Facebook search is restored; only the location picker remains removed.
+﻿// Facebook search is restored; only the location picker remains removed.
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const root = 'app/src/main/java/com/example/shopradar/';
+const root = 'app/src/main/java/com/aykkdk/shop/';
 const main = fs.readFileSync(root+'MainActivity.kt','utf8');
 const history = fs.readFileSync(root+'SearchHistory.kt','utf8');
 const market = fs.readFileSync(root+'Market.kt','utf8');

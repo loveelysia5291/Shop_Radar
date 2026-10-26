@@ -1,8 +1,8 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const assert = require('node:assert/strict');
-const main = fs.readFileSync('app/src/main/java/com/example/shopradar/MainActivity.kt', 'utf8');
+const main = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MainActivity.kt', 'utf8');
 const manifest = fs.readFileSync('app/src/main/AndroidManifest.xml', 'utf8');
-const cardMenu = fs.readFileSync('app/src/main/java/com/example/shopradar/RefreshSettingsUi.kt', 'utf8');
+const cardMenu = fs.readFileSync('app/src/main/java/com/aykkdk/shop/RefreshSettingsUi.kt', 'utf8');
 assert.match(manifest, /<application[^>]*android:enableOnBackInvokedCallback="false"/);
 assert.doesNotMatch(manifest, /android:enableOnBackInvokedCallback="true"/);
 assert.match(manifest, /<activity android:name="\.MainActivity"[^>]*android:enableOnBackInvokedCallback="false"/);
@@ -36,7 +36,7 @@ assert.match(main, /LifecycleEventObserver \{ _, _ -> rootBack\.reset\(\); backT
 assert.match(main, /lifecycleOwner\.lifecycle\.addObserver\(observer\)/);
 assert.match(main, /lifecycleOwner\.lifecycle\.removeObserver\(observer\)/);
 assert(main.indexOf('ScreenBackHandler(enabled = foreground)') < main.indexOf('if (showSearchResults) SearchResultsPage('));
-const back = fs.readFileSync('app/src/main/java/com/example/shopradar/ScreenBackHandler.kt', 'utf8');
+const back = fs.readFileSync('app/src/main/java/com/aykkdk/shop/ScreenBackHandler.kt', 'utf8');
 assert.match(main, /onBackPressedDispatcher\.addCallback\(this, screenBackCallback\)/);
 assert.match(main, /LocalScreenBackBinding provides screenBackBinding/);
 assert.match(main, /screenBackBinding\.dispatch\(\)/);

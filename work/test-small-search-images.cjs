@@ -1,4 +1,4 @@
-const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+﻿const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
 const generic = fs.readFileSync('app/src/main/assets/extract-products.js','utf8');
 const shopee = fs.readFileSync('app/src/main/assets/extract-shopee-products.js','utf8');
 const thumbnail = generic.match(/  function thumbnail\(image\) \{[\s\S]*?\n  \}/)[0];
@@ -10,7 +10,7 @@ assert.equal(vm.runInNewContext(thumbnail+'; thumbnail(image)', {image}), small)
 const srcset = shopee.match(/  function srcsetValues\(value\) \{[\s\S]*?\n  \}/)[0];
 assert.equal(vm.runInNewContext(srcset+'; srcsetValues(value)[0]', {value:`${large} 1600w, ${small} 160w`}), small);
 assert.match(generic, /images\?\.\[0\]\?\.sm\?\.src/);
-const native = fs.readFileSync('app/src/main/java/com/example/shopradar/MarketplaceCapture.kt','utf8');
+const native = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MarketplaceCapture.kt','utf8');
 assert.match(native, /setOf\(Market.SHOPEE, Market.YAHOO\)\) MetadataNetworkPolicy.configure\(this\)/);
 assert.match(native, /MetadataNetworkPolicy.response\(navigation.url.toString\(\), navigation.isForMainFrame\)/);
 console.log('PASS: small srcset/data-src before full-size currentSrc; Yahoo first-image small variant; hidden-reader media blocking.');

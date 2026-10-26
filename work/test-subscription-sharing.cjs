@@ -1,7 +1,7 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
-const read = name => fs.readFileSync('app/src/main/java/com/example/shopradar/'+name, 'utf8');
+const read = name => fs.readFileSync('app/src/main/java/com/aykkdk/shop/'+name, 'utf8');
 const source = fs.readFileSync('app/src/main/assets/extract-shopee-products.js', 'utf8');
 (async () => {
   const browser = await chromium.launch({channel:'msedge', headless:true});

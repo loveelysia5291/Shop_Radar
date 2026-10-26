@@ -1,5 +1,5 @@
-const fs = require('node:fs'), assert = require('node:assert/strict');
-const root = 'app/src/main/java/com/example/shopradar/';
+﻿const fs = require('node:fs'), assert = require('node:assert/strict');
+const root = 'app/src/main/java/com/aykkdk/shop/';
 const read = name => fs.readFileSync(root + name + '.kt', 'utf8');
 const popup = read('CardMenuPopup'), settings = read('RefreshSettingsUi');
 assert.match(popup, /\.height\(height\)/, 'Reserve the same panel height before entering settings');

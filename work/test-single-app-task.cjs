@@ -1,4 +1,4 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const root = 'app/src/main/';
 const manifestPaths = [root + 'AndroidManifest.xml',
@@ -16,11 +16,11 @@ for (const path of manifestPaths) {
   assert.doesNotMatch(xml, /android:(?:taskAffinity|process)=|android:launchMode="(?:singleInstance|singleInstancePerTask)"/);
 }
 for (const file of ['AuctionTracker.kt', 'RefreshRunner.kt']) {
-  const source = fs.readFileSync(root + 'java/com/example/shopradar/' + file, 'utf8');
+  const source = fs.readFileSync(root + 'java/com/aykkdk/shop/' + file, 'utf8');
   assert.match(source, /Intent\(context, MainActivity::class\.java\)[\s\S]{0,160}\.addFlags\(Intent\.FLAG_ACTIVITY_NEW_TASK or Intent\.FLAG_ACTIVITY_CLEAR_TOP or Intent\.FLAG_ACTIVITY_SINGLE_TOP\)/);
   assert.doesNotMatch(source, /FLAG_ACTIVITY_(?:MULTIPLE_TASK|NEW_DOCUMENT|CLEAR_TASK)/);
 }
-const main = fs.readFileSync(root + 'java/com/example/shopradar/MainActivity.kt', 'utf8');
+const main = fs.readFileSync(root + 'java/com/aykkdk/shop/MainActivity.kt', 'utf8');
 assert.match(main, /override fun onNewIntent\(intent: Intent\)[\s\S]{0,100}setIntent\(intent\)/);
 assert.match(main, /override fun onNewIntent\(intent: Intent\)[\s\S]{0,250}receiveShare\(intent\)/);
 assert.match(main, /override fun onNewIntent\(intent: Intent\)[\s\S]{0,200}openAuctions\+\+/);

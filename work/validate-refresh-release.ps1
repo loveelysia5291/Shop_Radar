@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $env:TEMP = Join-Path $PSScriptRoot 'runtime-temp'
 $env:TMP = $env:TEMP
 $env:JAVA_TOOL_OPTIONS = '-Duser.home=C:/Users/Elysia/Documents/Codex/2026-09-26/new-chat/work/java-home -Djava.io.tmpdir=C:/Users/Elysia/Documents/Codex/2026-09-26/new-chat/work/runtime-temp'
@@ -10,7 +10,7 @@ $mapping = Join-Path $projectDir 'app/build/outputs/mapping/release/mapping.txt'
 $badging = & "$sdkTools/aapt2.exe" dump badging $apk
 if ($LASTEXITCODE -ne 0) { throw 'APK badging check failed' }
 $badgingText = $badging -join "`n"
-if ($badgingText -notmatch "name='com.example.shopradar'.*versionCode='29'.*versionName='1.28'") { throw 'Unexpected package/version' }
+if ($badgingText -notmatch "name='com.aykkdk.shop'.*versionCode='29'.*versionName='1.28'") { throw 'Unexpected package/version' }
 if ($badgingText -match 'application-debuggable') { throw 'Debuggable APK is not a release artifact' }
 $manifest = & "$sdkTools/aapt2.exe" dump xmltree $apk --file AndroidManifest.xml
 if ($LASTEXITCODE -ne 0) { throw 'Manifest check failed' }
@@ -64,7 +64,7 @@ try {
 $dexStrings = $allDex.ToString()
 if (!$dexStrings.Contains('activity_back_received')) { throw 'Current Activity-owned back callback missing' }
 if ($dexStrings.Contains('15 分鐘背景通知測試（Debug）')) { throw 'Debug notification menu leaked into release' }
-foreach ($requiredPattern in @('Lcom/example/shopradar/AutomaticRefreshWorker;', 'radar-automatic-refresh', 'automatic_refresh_v1', 'sleepEnabled', '\u5237\u65b0\u8a02\u95b1', '\u5237\u65b0\u7af6\u62cd', '\u81ea\u52d5\u5237\u65b0', '\u7761\u7720\u6a21\u5f0f')) {
+foreach ($requiredPattern in @('Lcom/aykkdk/shop/AutomaticRefreshWorker;', 'radar-automatic-refresh', 'automatic_refresh_v1', 'sleepEnabled', '\u5237\u65b0\u8a02\u95b1', '\u5237\u65b0\u7af6\u62cd', '\u81ea\u52d5\u5237\u65b0', '\u7761\u7720\u6a21\u5f0f')) {
     $required = [System.Text.RegularExpressions.Regex]::Unescape($requiredPattern)
     if (!$dexStrings.Contains($required)) { throw "Missing current automatic-refresh implementation in packaged DEX: $required" }
 }

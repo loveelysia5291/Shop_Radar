@@ -1,4 +1,4 @@
-// Verify the actual Debug APK before publishing a uniquely named local copy.
+﻿// Verify the actual Debug APK before publishing a uniquely named local copy.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -44,10 +44,10 @@ function entries() {
 }
 (async()=>{
   const badging=run(path.join(sdk,'aapt2.exe'),['dump','badging',apk]);
-  assert.match(badging,/name='com.example.shopradar'.*versionCode='28'.*versionName='1.27-debug-html'/);
+  assert.match(badging,/name='com.aykkdk.shop'.*versionCode='28'.*versionName='1.27-debug-html'/);
   assert.match(badging,/application-debuggable/);
   const manifest=run(path.join(sdk,'aapt2.exe'),['dump','xmltree',apk,'--file','AndroidManifest.xml']);
-  const placeBlock=manifest.split(/E: activity /).find(block=>block.includes('com.example.shopradar.FacebookLocationActivity'));
+  const placeBlock=manifest.split(/E: activity /).find(block=>block.includes('com.aykkdk.shop.FacebookLocationActivity'));
   if (noFacebookSearch) assert.equal(placeBlock, undefined, 'Retired place picker leaked into manifest');
   else {
     assert.ok(placeBlock,'Private official place picker missing from packaged manifest');
@@ -59,7 +59,7 @@ function entries() {
   run(path.join(sdk,'zipalign.exe'),['-c','4',apk]);
   const files=await entries();
   const dex=[...files].filter(([name])=>/^classes\d*\.dex$/.test(name)).map(([,data])=>data.toString('utf8')).join('');
-  for(const name of (noFacebookSearch ? ['searchSelection','supportsSearch','facebookLocationId','Lcom/example/shopradar/ShopNewItems;'] : ['FacebookLocationActivity','FacebookLocationStore','facebook_locations_v1','facebookPlaceId','facebookLocationId','Lcom/example/shopradar/ShopNewItems;']))
+  for(const name of (noFacebookSearch ? ['searchSelection','supportsSearch','facebookLocationId','Lcom/aykkdk/shop/ShopNewItems;'] : ['FacebookLocationActivity','FacebookLocationStore','facebook_locations_v1','facebookPlaceId','facebookLocationId','Lcom/aykkdk/shop/ShopNewItems;']))
     assert.ok(dex.includes(name),'Current implementation missing from APK: '+name);
   if (noFacebookSearch) for (const name of ['FacebookLocationActivity','FacebookLocationStore','FacebookLocationDialog'])
     assert.ok(!dex.includes(name), 'Retired picker leaked into APK: '+name);
@@ -71,13 +71,13 @@ function entries() {
   if (recovery) {
     for(const name of ['ShopeeRecovery','PageSwipeEdgePolicy','WebScriptDiagnostics','finishAccess','EXTRA_SEARCH_URL'])
       assert.ok(dex.includes(name),'Shopee recovery/back fix missing from APK: '+name);
-    const loginBlock=manifest.split(/E: activity /).find(block=>block.includes('com.example.shopradar.ShopeeLoginActivity'));
+    const loginBlock=manifest.split(/E: activity /).find(block=>block.includes('com.aykkdk.shop.ShopeeLoginActivity'));
     assert.ok(loginBlock);assert.match(loginBlock,/android:exported[^\n]*0x0/);
   }
   if (startup) {
     for(const name of ['RadarLaunchHost','awaitLaunchDraw'])
       assert.ok(dex.includes(name), 'Startup implementation missing: '+name);
-    const mainBlock=manifest.split(/E: activity /).find(block=>block.includes('com.example.shopradar.MainActivity'));
+    const mainBlock=manifest.split(/E: activity /).find(block=>block.includes('com.aykkdk.shop.MainActivity'));
     assert.ok(mainBlock);assert.match(mainBlock,/android:theme/);
     const resources=run(path.join(sdk,'aapt2.exe'),['dump','resources',apk]);
     for(const name of ['Theme.ShopRadar.Launch','launch_background','launch_light_bars'])

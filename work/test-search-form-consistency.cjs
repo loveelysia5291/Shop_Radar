@@ -1,6 +1,6 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const root = 'app/src/main/java/com/example/shopradar/';
+const root = 'app/src/main/java/com/aykkdk/shop/';
 const main = fs.readFileSync(root + 'MainActivity.kt', 'utf8');
 const start = main.indexOf('0 -> Box(modifier, contentAlignment = Alignment.TopCenter)');
 const button = main.indexOf('if (!fetching) Button(onClick =', start);

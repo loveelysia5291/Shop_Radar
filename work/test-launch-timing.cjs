@@ -1,9 +1,9 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const read = path => fs.readFileSync(path, 'utf8');
 const root = 'app/src/main/';
-const main = read(root + 'java/com/example/shopradar/MainActivity.kt');
-const launch = read(root + 'java/com/example/shopradar/LaunchAnimation.kt');
+const main = read(root + 'java/com/aykkdk/shop/MainActivity.kt');
+const launch = read(root + 'java/com/aykkdk/shop/LaunchAnimation.kt');
 const manifest = read(root + 'AndroidManifest.xml');
 const activity = main.slice(main.indexOf('class MainActivity'), main.indexOf('private fun RadarApp'));
 assert.match(activity, /setContent \{ RadarLaunchHost\(savedInstanceState == null, nativeReady = launchWindowDismissed\) \{ RadarApp\(/);

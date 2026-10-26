@@ -1,6 +1,6 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const read = name => fs.readFileSync(`app/src/main/java/com/example/shopradar/${name}.kt`, 'utf8');
+const read = name => fs.readFileSync(`app/src/main/java/com/aykkdk/shop/${name}.kt`, 'utf8');
 const main = read('MainActivity');
 const auto = read('AutomaticRefresh');
 const runner = read('RefreshRunner');

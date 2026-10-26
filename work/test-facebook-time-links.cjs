@@ -1,4 +1,4 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const extract = fs.readFileSync('app/src/main/assets/facebook-public-metadata.js','utf8') + ';\n' +
@@ -68,7 +68,7 @@ const card = date => `<div data-action-id="opaque-ui-handle" data-type="containe
     await load(card('')); await page.evaluate(target=>{window.__shopRadarFacebookCard=target;window.clicks=0;document.querySelector('[data-action-id]').addEventListener('click',()=>window.clicks++);},target);
     for(let i=0;i<6;i++){await page.evaluate(()=>{window.__shopRadarFacebookCardClickAt=Date.now()-1501;});await page.evaluate(resolve);}
     assert.equal(await page.evaluate(()=>window.clicks),3,'Bound repeated card clicks');
-    const activity=fs.readFileSync('app/src/main/java/com/example/shopradar/FacebookCardActivity.kt','utf8');
+    const activity=fs.readFileSync('app/src/main/java/com/aykkdk/shop/FacebookCardActivity.kt','utf8');
     assert.match(activity,/override fun onCreateWindow/);assert.match(activity,/doUpdateVisitedHistory/);
     assert.match(activity,/FacebookResolvedLinks.remember/);assert.match(activity,/disposePopup\(\)/);
     console.log('PASS: supplied real item URL; approximate Chinese dates; ISO/record dates; no seller/update/neighbor dates; direct links and verified JSON cache mapping; delayed-handler retry and 3-click bound; native navigation/window guards present.');

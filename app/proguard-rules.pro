@@ -3,19 +3,19 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 # WorkManager persists worker class names and instantiates their constructors.
--keep class com.example.shopradar.AuctionWorker {
+-keep class com.aykkdk.shop.AuctionWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }
--keep class com.example.shopradar.AutomaticRefreshWorker {
+-keep class com.aykkdk.shop.AutomaticRefreshWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }
--keep class com.example.shopradar.RefreshScheduleWatchdog {
+-keep class com.aykkdk.shop.RefreshScheduleWatchdog {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }
 -keepattributes SourceFile,LineNumberTable
--keep class com.example.shopradar.PendingAlertDeliveryWorker {
+-keep class com.aykkdk.shop.PendingAlertDeliveryWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }
--keep class com.example.shopradar.BackgroundNotificationTestWorker {
+-keep class com.aykkdk.shop.BackgroundNotificationTestWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }

@@ -1,6 +1,6 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const source = fs.readFileSync('app/src/main/java/com/example/shopradar/MainActivity.kt', 'utf8');
+const source = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MainActivity.kt', 'utf8');
 const paging = source.split('fun selectResultsPage(page: Int, keepProducts: Boolean = false) {')[1].split('fun startSubscriptionShopCapture(')[0];
 assert.match(paging, /page !in 1\.\.\(searchPageCount\?\.coerceIn\(1, 500\) \?: appliedPage\)/);
 assert.match(paging, /if \(fetching\) stopSearch\(\)/);

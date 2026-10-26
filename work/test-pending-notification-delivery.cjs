@@ -1,6 +1,6 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const read = name => fs.readFileSync(`app/src/main/java/com/example/shopradar/${name}.kt`, 'utf8');
+const read = name => fs.readFileSync(`app/src/main/java/com/aykkdk/shop/${name}.kt`, 'utf8');
 const job = read('PendingAlertDeliveryWorker');
 assert.match(job, /ExistingWorkPolicy.APPEND_OR_REPLACE/);
 assert.match(job, /BackgroundAlertDelivery.drainEnabled\(applicationContext\)/);
@@ -12,5 +12,5 @@ assert.match(read('AuctionTracker'), /token.isNotBlank\(\) && backgroundDelivery
 assert.match(read('RefreshRunner'), /backgroundDelivery = background/);
 assert.match(read('BackgroundAlerts'), /if \(!allowed\(\)\) return "cancelled"/);
 assert.match(read('BackgroundAlerts'), /schedules.sleep\(\).contains/);
-assert.match(fs.readFileSync('app/proguard-rules.pro', 'utf8'), /-keep class com.example.shopradar.PendingAlertDeliveryWorker/);
+assert.match(fs.readFileSync('app/proguard-rules.pro', 'utf8'), /-keep class com.aykkdk.shop.PendingAlertDeliveryWorker/);
 console.log('Pending notification delivery wiring checks passed; device background test still required.');

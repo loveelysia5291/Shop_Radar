@@ -1,15 +1,15 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const asset = 'app/src/debug/assets/marketplace-html-debug.js';
 const source = fs.readFileSync(asset, 'utf8');
 assert.ok(!fs.existsSync('app/src/main/assets/marketplace-html-debug.js'));
 assert.ok(!fs.existsSync('app/src/release/assets/marketplace-html-debug.js'));
-assert.ok(!fs.existsSync('app/src/main/java/com/example/shopradar/MarketplaceHtmlDebugSession.kt'));
-assert.ok(!fs.existsSync('app/src/main/java/com/example/shopradar/CaptureDiagnostics.kt'));
+assert.ok(!fs.existsSync('app/src/main/java/com/aykkdk/shop/MarketplaceHtmlDebugSession.kt'));
+assert.ok(!fs.existsSync('app/src/main/java/com/aykkdk/shop/CaptureDiagnostics.kt'));
 assert.doesNotMatch(source, /document\.cookie|localStorage|sessionStorage|fetch\(|XMLHttpRequest/);
 for (const name of ['CaptureDiagnostics.kt', 'CaptureDebugUi.kt']) {
-  const release = fs.readFileSync('app/src/release/java/com/example/shopradar/' + name, 'utf8');
+  const release = fs.readFileSync('app/src/release/java/com/aykkdk/shop/' + name, 'utf8');
   assert.doesNotMatch(release, /outerHTML|evaluateJavascript|MarketplaceHtmlDebugSession|ZipOutputStream|writeText|assets\.open/);
 }
 (async () => {

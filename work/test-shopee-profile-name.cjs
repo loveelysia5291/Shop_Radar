@@ -1,4 +1,4 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const source = fs.readFileSync('app/src/main/assets/extract-shopee-products.js', 'utf8');
@@ -33,7 +33,7 @@ for (const mode of ['title']) {
 assert.equal(read('/z800606z', '/z800606z', 'missing').shopName, '');
 for (const mode of ['desktop', 'mobile']) assert.equal(read('/z800606z', '/z800606z', mode).shopName, '', 'Headings must not substitute for the document title');
 assert.doesNotMatch(source.slice(source.indexOf('function shopName()'), source.indexOf('function advertisement')), /querySelector|seller-name|shop-profile-name|section-seller-overview-horizontal__portrait-name/);
-const native = fs.readFileSync('app/src/main/java/com/example/shopradar/MarketplaceCapture.kt','utf8');
+const native = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MarketplaceCapture.kt','utf8');
 assert.match(native, /SubscriptionIdentity.sameShop\(request.url, envelope.optString\("shopUrl"\)\)/);
 assert.match(native, /SubscriptionIdentity.sameShop\(request.url, web.url.orEmpty\(\)\)/);
 console.log('PASS: Shopee delivers rendered shop name independently of product cards, with private/wrong/search/stale routes rejected.');

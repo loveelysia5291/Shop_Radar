@@ -1,5 +1,5 @@
-const fs = require('node:fs'), assert = require('node:assert/strict');
-const root = 'app/src/main/java/com/example/shopradar/';
+﻿const fs = require('node:fs'), assert = require('node:assert/strict');
+const root = 'app/src/main/java/com/aykkdk/shop/';
 const main = fs.readFileSync(root + 'MainActivity.kt', 'utf8');
 assert.match(main, /if \(pageSelectionEnabled && fetching\) Surface\(/);
 assert.match(main, /Modifier\.align\(Alignment.Center\)\.semantics \{ contentDescription = "正在載入第/);

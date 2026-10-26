@@ -1,17 +1,17 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('C:/Users/Elysia/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const source = fs.readFileSync('app/src/debug/assets/shopee-guest-search-debug.js', 'utf8');
-const release = fs.readFileSync('app/src/release/java/com/example/shopradar/ShopeeGuestSearch.kt', 'utf8');
-const mainUi = fs.readFileSync('app/src/main/java/com/example/shopradar/MainActivity.kt', 'utf8');
-const commonUi = fs.readFileSync('app/src/main/java/com/example/shopradar/RefreshSettingsUi.kt', 'utf8');
+const release = fs.readFileSync('app/src/release/java/com/aykkdk/shop/ShopeeGuestSearch.kt', 'utf8');
+const mainUi = fs.readFileSync('app/src/main/java/com/aykkdk/shop/MainActivity.kt', 'utf8');
+const commonUi = fs.readFileSync('app/src/main/java/com/aykkdk/shop/RefreshSettingsUi.kt', 'utf8');
 for (const path of ['app/src/main/assets/shopee-guest-search-debug.js',
   'app/src/release/assets/shopee-guest-search-debug.js',
-  'app/src/main/java/com/example/shopradar/BackgroundRefreshStatus.kt']) assert.ok(!fs.existsSync(path));
+  'app/src/main/java/com/aykkdk/shop/BackgroundRefreshStatus.kt']) assert.ok(!fs.existsSync(path));
 assert.doesNotMatch(source.replace(/^\s*\/\/.*$/gm, ''), /document\.cookie|localStorage|sessionStorage|fetch\s*\(|XMLHttpRequest|history\.|location\.(?:assign|replace)|\.click\s*\(/);
 assert.doesNotMatch(release, /assets\.open|CaptureAssets\.read|evaluateJavascript|java\.net\.URI/);
 assert.doesNotMatch(mainUi + commonUi, /Text\("背景刷新狀態"\)|OutlinedIconButton/);
-const releaseStatus = fs.readFileSync('app/src/release/java/com/example/shopradar/BackgroundRefreshStatus.kt', 'utf8');
+const releaseStatus = fs.readFileSync('app/src/release/java/com/aykkdk/shop/BackgroundRefreshStatus.kt', 'utf8');
 assert.doesNotMatch(releaseStatus, /getSharedPreferences|\.commit\(|\.apply\(|WorkManager/);
 const card = '<a href="/product/123/456"><img alt="商品"/><span>公開手機商品 NT$100</span></a>';
 (async () => {

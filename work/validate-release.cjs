@@ -1,4 +1,4 @@
-// Verify the generated local-install Release and copy it under its content hash.
+﻿// Verify the generated local-install Release and copy it under its content hash.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -47,7 +47,7 @@ async function packagedEntries() {
 
 (async()=>{
   const badging=run(path.join(sdk,'aapt2.exe'),['dump','badging',apk]);
-  assert.match(badging,/name='com.example.shopradar'.*versionCode='28'.*versionName='1.27'/);
+  assert.match(badging,/name='com.aykkdk.shop'.*versionCode='28'.*versionName='1.27'/);
   assert.doesNotMatch(badging,/application-debuggable/);
   const manifest=run(path.join(sdk,'aapt2.exe'),['dump','xmltree',apk,'--file','AndroidManifest.xml']);
   assert.doesNotMatch(manifest,/android:debuggable.*(?:=true|0xffffffff)/);
@@ -67,7 +67,7 @@ async function packagedEntries() {
   for(const name of sources) assert.equal(hash(entries.get('assets/'+name) || Buffer.alloc(0)),hash(fs.readFileSync(path.join(root,'app/src/main/assets',name))),name);
   const dex=[...entries].filter(([name])=>/^classes\d*\.dex$/.test(name)).map(([,data])=>data.toString('utf8')).join('');
   assert.doesNotMatch(dex,/early-4s|HTML 診斷編號|marketplace-html-debug\.js|JavaScript 錯誤分類|Debug 蝦皮搜尋|背景刷新狀態/);
-  for(const value of ['Lcom/example/shopradar/AutomaticRefreshWorker;','radar-automatic-refresh','automatic_refresh_v1','sleepEnabled','setBlockNetworkImage'])
+  for(const value of ['Lcom/aykkdk/shop/AutomaticRefreshWorker;','radar-automatic-refresh','automatic_refresh_v1','sleepEnabled','setBlockNetworkImage'])
     assert.ok(dex.includes(value),'Missing current DEX implementation: '+value);
   const mappingText=fs.readFileSync(mapping,'utf8');
   if(rutenTime) assert.ok(mappingText.includes('RutenListingTime'), 'Missing Ruten listing time repair');
@@ -94,7 +94,7 @@ async function packagedEntries() {
   assert.ok(mappingText.includes('MetadataNetworkPolicy'),'Missing new network policy in R8 mapping');
   assert.doesNotMatch(mappingText,/^com\.example\.shopradar\.(?:WebScriptDiagnostics|MarketplaceHtmlDebugSession|CaptureTrace) ->/m);
   if(startup) {
-    const mainBlock=manifest.split(/E: activity /).find(block=>block.includes('com.example.shopradar.MainActivity'));
+    const mainBlock=manifest.split(/E: activity /).find(block=>block.includes('com.aykkdk.shop.MainActivity'));
     assert.ok(mainBlock);assert.match(mainBlock,/android:theme/);
     const resources=run(path.join(sdk,'aapt2.exe'),['dump','resources',apk]);
     for(const name of ['Theme.ShopRadar.Launch','launch_background','launch_light_bars'])
@@ -113,27 +113,27 @@ async function packagedEntries() {
     }
     assert.ok(totals.tests>0);assert.equal(totals.failures+totals.errors,0,variant);
     if(shopAvatar) {
-      const avatarTests=fs.readFileSync(path.join(directory,'TEST-com.example.shopradar.ShopSubscriptionCoverTest.xml'),'utf8');
+      const avatarTests=fs.readFileSync(path.join(directory,'TEST-com.aykkdk.shop.ShopSubscriptionCoverTest.xml'),'utf8');
       assert.match(avatarTests, /<testsuite\b[^>]* tests=["']6["']/);
     }
     if(searchStreaming) {
-      const streaming=fs.readFileSync(path.join(directory,'TEST-com.example.shopradar.SearchPageLoadingTest.xml'),'utf8');
+      const streaming=fs.readFileSync(path.join(directory,'TEST-com.aykkdk.shop.SearchPageLoadingTest.xml'),'utf8');
       assert.match(streaming, /<testsuite\b[^>]* tests=["']11["']/);
     }
     if(shopeeLoading) for(const [name,count] of [['SearchCaptureSessionTest',4],['ShopPreviewPresentationTest',2]]) {
-      const result=fs.readFileSync(path.join(directory,'TEST-com.example.shopradar.'+name+'.xml'),'utf8');
+      const result=fs.readFileSync(path.join(directory,'TEST-com.aykkdk.shop.'+name+'.xml'),'utf8');
       assert.match(result, new RegExp(`<testsuite\\b[^>]* tests=["']${count}["']`));
     }
     if(shopeeLoading) {
       // R8 can fully inline the tiny presentation predicate and omit its class mapping.
       // Check both compiled UI callers, rather than requiring an unshrunk helper class.
       const classes=path.join(root,'app/build/tmp/kotlin-classes',variant.toLowerCase());
-      const packageDir=path.join(classes,'com/example/shopradar');
+      const packageDir=path.join(classes,'com/aykkdk/shop');
       const callers=fs.readdirSync(packageDir).filter(name=>/^MainActivityKt.*\.class$/.test(name) &&
         fs.readFileSync(path.join(packageDir,name)).includes(Buffer.from('ShopPreviewPresentation')));
       assert.ok(callers.length>0, variant+': missing visible-card presentation gate in UI');
       const bytecode=run('C:/Program Files/Java/jdk-21.0.10/bin/javap.exe',
-        ['-classpath',classes,'-c','-p',...callers.map(name=>'com.example.shopradar.'+name.slice(0,-6))]);
+        ['-classpath',classes,'-c','-p',...callers.map(name=>'com.aykkdk.shop.'+name.slice(0,-6))]);
       assert.match(bytecode,/ShopPreviewPresentation\.showResults/);
     }
     tests[variant]=totals;
