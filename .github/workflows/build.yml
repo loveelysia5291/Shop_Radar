@@ -51,9 +51,11 @@ jobs:
         with:
           name: ShopRadar-debug
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: ShopRadar-release
           path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn

@@ -24,19 +24,19 @@ android {
     buildFeatures { compose = true }
 
     signingConfigs {
-        providers.gradleProperty("debugKeystorePath").orNull?.let { path ->
+        providers.gradleProperty("debugKeystorePath").orNull?.takeIf { it.isNotBlank() }?.let { path ->
             getByName("debug").storeFile = file(path)
         }
         create("release") {
-            val keyPath = providers.gradleProperty("releaseKeystorePath").orNull
-                ?: System.getenv("RELEASE_KEYSTORE_PATH")
+            val keyPath = providers.gradleProperty("releaseKeystorePath").orNull?.takeIf { it.isNotBlank() }
+                ?: System.getenv("RELEASE_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
             if (keyPath != null) {
                 storeFile = file(keyPath)
-                storePassword = providers.gradleProperty("releaseKeystorePassword").orNull
+                storePassword = providers.gradleProperty("releaseKeystorePassword").orNull?.takeIf { it.isNotBlank() }
                     ?: System.getenv("RELEASE_KEYSTORE_PASSWORD")
-                keyAlias = providers.gradleProperty("releaseKeyAlias").orNull
+                keyAlias = providers.gradleProperty("releaseKeyAlias").orNull?.takeIf { it.isNotBlank() }
                     ?: System.getenv("RELEASE_KEY_ALIAS")
-                keyPassword = providers.gradleProperty("releaseKeyPassword").orNull
+                keyPassword = providers.gradleProperty("releaseKeyPassword").orNull?.takeIf { it.isNotBlank() }
                     ?: System.getenv("RELEASE_KEY_PASSWORD")
             }
         }
