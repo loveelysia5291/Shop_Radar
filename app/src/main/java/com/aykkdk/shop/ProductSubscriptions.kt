@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.content.Context
 import androidx.core.app.NotificationManagerCompat
@@ -61,6 +61,7 @@ class ProductSubscriptionStore(private val context: Context) {
         initial?.let { ProductSubscriptionDecision.apply(item, it, System.currentTimeMillis()) }
         prefs.edit().putString(url, item.toString()).apply()
         if (initial == null) SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.PRODUCT, url))
+        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), 30)
         ProductSubscriptionAddResult(true, if (initial != null) "已訂閱商品，已完成首次讀取。"
             else "已訂閱商品，正在讀取名稱、價格與庫存。")
     }

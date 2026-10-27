@@ -405,6 +405,10 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     var appliedFacebookSort by remember { mutableStateOf(FacebookFilters.DEFAULT_SORT) }
     var boboMall by rememberSaveable { mutableStateOf("0") }
     var boboCategory by rememberSaveable { mutableStateOf("") }
+    var boboArea by rememberSaveable { mutableStateOf("0") }
+    var boboAgent by rememberSaveable { mutableStateOf("0") }
+    var appliedBoboArea by remember { mutableStateOf("0") }
+    var appliedBoboAgent by remember { mutableStateOf("0") }
     var query by rememberSaveable { mutableStateOf("") }
     var min by rememberSaveable { mutableStateOf("") }
     var max by rememberSaveable { mutableStateOf("") }
@@ -442,7 +446,8 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             Market.RUTEN -> SearchHistoryCriteria(historyMarket, query, min, max, sort = rutenSort,
                 mainCategory = rutenMainCategory, category = rutenCategory)
             Market.FACEBOOK -> SearchHistoryCriteria(historyMarket, query, min, max, sort = facebookSort)
-            Market.BBOBO -> SearchHistoryCriteria(historyMarket, query, min, max, boboMall = boboMall, category = boboCategory)
+            Market.BBOBO -> SearchHistoryCriteria(historyMarket, query, min, max,
+                boboMall = boboMall, category = boboCategory, boboArea = boboArea, boboAgent = boboAgent)
             Market.IOPEN -> SearchHistoryCriteria(historyMarket, query, min, max)
         }
         searchHistoryEntries = SearchHistory.record(searchHistoryEntries, criteria)
@@ -468,7 +473,10 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             }
             Market.RUTEN -> { rutenSort = criteria.sort; rutenMainCategory = criteria.mainCategory; rutenCategory = criteria.category }
             Market.FACEBOOK -> facebookSort = criteria.sort
-            Market.BBOBO -> { boboMall = criteria.boboMall; boboCategory = criteria.category }
+            Market.BBOBO -> {
+                boboMall = criteria.boboMall; boboCategory = criteria.category
+                boboArea = criteria.boboArea; boboAgent = criteria.boboAgent
+            }
             Market.IOPEN -> Unit
         }
     }
@@ -1062,7 +1070,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     market.search(appliedQuery, appliedMin, appliedMax,
                         if (market == Market.YAHOO) appliedYahooSubcategory.ifBlank { null } else null,
                         if (SearchPageLoading.infinite(market)) 1 else appliedPage, appliedCarousellSortBy, appliedCarousellCategory.ifBlank { null }, appliedYahooState, appliedYahooSort,
-                        rutenCategoryId = appliedRutenCategory, boboMall = appliedBoboMall, shopeeSort = appliedShopeeSort,
+                        rutenCategoryId = appliedRutenCategory, boboMall = appliedBoboMall,
+                        boboArea = appliedBoboArea, boboAgent = appliedBoboAgent,
+                        shopeeSort = appliedShopeeSort,
                         shopeeMall = appliedShopeeMall, shopeePreferred = appliedShopeePreferred,
                         shopeeCondition = appliedShopeeCondition, facebookSort = appliedFacebookSort,
                         rutenSort = appliedRutenSort), token, quickSearch = true,
@@ -1394,12 +1404,32 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     }
                     if (selected == Market.BBOBO.label) item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CategoryDropdown("商城", BoboSearch.malls.first { it.first == BoboSearch.zone(boboMall) }.second,
-                            BoboSearch.malls, onSelect = { boboMall = it })
-                        CategoryDropdown("商品分類", boboCategory.ifBlank { "全部分類" },
-                            listOf("" to "全部分類") + BoboSearch.categories.map { it to it }, onSelect = { boboCategory = it })
-                        Text("分類篩選目前頁面的商品", style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            CategoryDropdown("商城", BoboSearch.malls.first { it.first == BoboSearch.zone(boboMall) }.second,
+                                BoboSearch.malls, onSelect = { boboMall = it })
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CategoryDropdown("地區", BoboSearch.areaName(boboArea),
+                                    BoboSearch.areas, modifier = Modifier.weight(1f), compact = true,
+                                    onSelect = {
+                                        boboArea = it
+                                        if (!BoboSearch.agentBelongsToArea(boboArea, boboAgent)) boboAgent = "0"
+                                    })
+                                val agentOptions = BoboSearch.agentOptions(boboArea)
+                                CategoryDropdown("店舖", BoboSearch.agentName(boboArea, boboAgent),
+                                    agentOptions, modifier = Modifier.weight(1f), compact = true,
+                                    onSelect = { selectedId ->
+                                        val store = BoboSearch.stores.firstOrNull { it.agentId == selectedId }
+                                        if (store != null) {
+                                            boboArea = store.areaId
+                                            boboAgent = store.agentId
+                                        } else {
+                                            boboAgent = selectedId
+                                        }
+                                    })
+                            }
+                            CategoryDropdown("商品分類", boboCategory.ifBlank { "全部分類" },
+                                listOf("" to "全部分類") + BoboSearch.categories.map { it to it }, onSelect = { boboCategory = it })
+                            Text("分類篩選目前頁面的商品", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     if (selected == Market.SHOPEE.label) item {
@@ -1480,6 +1510,8 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                                     appliedRutenSort = if (selected == Market.RUTEN.label) rutenSort else ""
                                     appliedYahooState = yahooState; appliedYahooSort = yahooSort; appliedBoboMall = BoboSearch.zone(boboMall)
                                     appliedBoboCategory = BoboSearch.category(boboCategory)
+                                    appliedBoboArea = BoboSearch.validArea(boboArea)
+                                    appliedBoboAgent = BoboSearch.validAgent(boboArea, boboAgent)
                                     appliedFacebookSort = facebookSort
                                     appliedShopeeSort = shopeeSort
                                     appliedShopeeMall = shopeeMall; appliedShopeePreferred = shopeePreferred
@@ -1600,6 +1632,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                         saved.put("checkedAt", System.currentTimeMillis()).put("newCount", 0)
                         shopsPrefs.edit().putString(previewShopUrl, saved.toString()).apply(); shopsVersion++
                         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.SHOP, previewShopUrl))
+                        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, previewShopUrl), 30)
                         showShopDetails = false; warning = "已新增訂閱：$previewShopName"
                     }
                 }.onFailure { warning = it.message ?: "無法新增店家訂閱，請重試。" }

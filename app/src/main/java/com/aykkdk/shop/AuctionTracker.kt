@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -53,6 +53,7 @@ class AuctionStore(private val context: Context) {
         items.add(JSONObject().put("url", url).put("title", "等待取得商品資料").put("state", "unknown")
             .put("trackingId", UUID.randomUUID().toString()).put("alertsEnabled", true))
         save(items)
+        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.AUCTION, url), 15)
     }
     fun remove(url: String) {
         synchronized(lock) {

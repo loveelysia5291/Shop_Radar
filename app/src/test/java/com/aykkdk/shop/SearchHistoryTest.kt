@@ -14,6 +14,13 @@ class SearchHistoryTest {
         assertEquals("", criteria.copy(market = Market.IOPEN).normalized().category)
         assertEquals("", criteria.copy(category = "無效分類").normalized().category)
     }
+
+    @Test fun boboAreaAndStoreSurviveHistory() {
+        val criteria = SearchHistoryCriteria(Market.BBOBO, "手機", boboArea = "1", boboAgent = "62")
+        val saved = SearchHistory.decode(SearchHistory.encode(SearchHistory.record(emptyList(), criteria))).single().criteria
+        assertEquals(criteria, saved)
+        assertTrue(saved.summary().contains("北市延平舖"))
+    }
     private fun shopee(keyword: String = "手機") = SearchHistoryCriteria(Market.SHOPEE, keyword, "1", "1000",
         sort = "ctime", condition = "USED_ITEM", mall = true, preferred = true)
 

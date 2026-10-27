@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.Manifest
 import android.app.NotificationManager
@@ -24,7 +24,7 @@ internal object RefreshNotificationAccess {
             val subChannel = android.app.NotificationChannel(
                 CHANNEL_SUBSCRIPTIONS,
                 "訂閱更新",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "店家新品與商品降價更新通知"
             }

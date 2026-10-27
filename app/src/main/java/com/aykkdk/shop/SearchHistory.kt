@@ -18,6 +18,8 @@ internal data class SearchHistoryCriteria(
     val category: String = "",
     val yahooState: String = "0",
     val boboMall: String = "0",
+    val boboArea: String = "0",
+    val boboAgent: String = "0",
     val facebookLocationId: String = FacebookLocation.DEFAULT_ID,
     val facebookLocationName: String = FacebookLocation.defaultPlace.name
 ) {
@@ -43,7 +45,12 @@ internal data class SearchHistoryCriteria(
                 mainCategory = categoryPair.first, category = categoryPair.second)
             Market.RUTEN -> base.copy(sort = RutenFilters.sort(sort),
                 mainCategory = categoryPair.first, category = categoryPair.second)
-            Market.BBOBO -> base.copy(boboMall = BoboSearch.zone(boboMall), category = BoboSearch.category(category))
+            Market.BBOBO -> base.copy(
+                boboMall = BoboSearch.zone(boboMall),
+                category = BoboSearch.category(category),
+                boboArea = BoboSearch.validArea(boboArea),
+                boboAgent = BoboSearch.validAgent(boboArea, boboAgent)
+            )
             Market.IOPEN -> base
         }
     }
@@ -77,7 +84,14 @@ internal data class SearchHistoryCriteria(
                 add(YahooFilters.states.firstOrNull { it.first == yahooState }?.second ?: "全部")
             }
             Market.RUTEN -> add(RutenFilters.sorts.firstOrNull { it.first == sort }?.second ?: "熱門")
-            Market.BBOBO -> add(BoboSearch.malls.firstOrNull { it.first == boboMall }?.second ?: "二手商城")
+            Market.BBOBO -> {
+                add(BoboSearch.malls.firstOrNull { it.first == boboMall }?.second ?: "二手商城")
+                if (boboAgent != "0") {
+                    add(BoboSearch.agentName(boboArea, boboAgent))
+                } else if (boboArea != "0") {
+                    add(BoboSearch.areaName(boboArea))
+                }
+            }
             Market.IOPEN -> Unit
         }
         categoryName().takeIf { it.isNotBlank() }?.let { add(it) }
@@ -142,6 +156,7 @@ internal object SearchHistory {
                 .put("sort", c.sort).put("condition", c.condition).put("mall", c.mall).put("preferred", c.preferred)
                 .put("mainCategory", c.mainCategory).put("category", c.category)
                 .put("yahooState", c.yahooState).put("boboMall", c.boboMall)
+                .put("boboArea", c.boboArea).put("boboAgent", c.boboAgent)
                 .put("facebookLocationId", c.facebookLocationId).put("facebookLocationName", c.facebookLocationName))
         }
         return JSONObject().put("version", 1).put("entries", records).toString()
@@ -161,7 +176,8 @@ internal object SearchHistory {
                     val criteria = SearchHistoryCriteria(market, item.optString("keyword"), item.optString("min"), item.optString("max"),
                         item.optString("sort"), item.optString("condition"), item.optBoolean("mall"), item.optBoolean("preferred"),
                         item.optString("mainCategory"), item.optString("category"), item.optString("yahooState", "0"),
-                        item.optString("boboMall", "0"), item.optString("facebookLocationId", FacebookLocation.DEFAULT_ID),
+                        item.optString("boboMall", "0"), item.optString("boboArea", "0"), item.optString("boboAgent", "0"),
+                        item.optString("facebookLocationId", FacebookLocation.DEFAULT_ID),
                         item.optString("facebookLocationName", FacebookLocation.defaultPlace.name)).normalized()
                     if (criteria.canSave()) add(SearchHistoryEntry(id, criteria, item.optLong("savedAt")))
                 }

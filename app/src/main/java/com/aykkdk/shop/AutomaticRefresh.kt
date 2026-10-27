@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.content.Context
 import android.net.ConnectivityManager
@@ -84,6 +84,28 @@ internal object AutomaticRefreshScheduler {
     suspend fun initialize(context: Context) = withContext(Dispatchers.IO) {
         val store = AutomaticRefreshStore(context)
         val manager = WorkManager.getInstance(context)
+        // Ensure all existing subscriptions and auctions have an automatic refresh plan
+        val shopPrefs = context.getSharedPreferences("shop_subscriptions_v2", 0)
+        shopPrefs.all.keys.forEach { url ->
+            val target = RefreshTarget(RefreshKind.SHOP, url)
+            if (store.exists(target) && store.plan(target) == null) {
+                store.configure(target, 30)
+            }
+        }
+        val productPrefs = context.getSharedPreferences("product_subscriptions_v1", 0)
+        productPrefs.all.keys.forEach { url ->
+            val target = RefreshTarget(RefreshKind.PRODUCT, url)
+            if (store.exists(target) && store.plan(target) == null) {
+                store.configure(target, 30)
+            }
+        }
+        AuctionStore(context).list().forEach { item ->
+            val url = item.optString("url")
+            val target = RefreshTarget(RefreshKind.AUCTION, url)
+            if (store.exists(target) && store.plan(target) == null) {
+                store.configure(target, 15)
+            }
+        }
         if (store.entries().any { store.exists(it.first) }) PendingAlertDelivery.enqueue(context)
         if (!store.prefs.getBoolean("legacyCancelled", false)) {
             manager.cancelUniqueWork("auction-periodic")
@@ -147,7 +169,7 @@ class AutomaticRefreshWorker(context: Context, params: WorkerParameters) : Corou
         try {
             BackgroundAlertDelivery.drainEnabled(applicationContext)
             // Bound each wake-up, and serialize readers to avoid concurrent WebViews.
-            val due = store.entries().filter { it.second.dueAt <= System.currentTimeMillis() }.sortedBy { it.second.dueAt }.take(3)
+            val due = store.entries().filter { it.second.dueAt <= System.currentTimeMillis() + 60_000L }.sortedBy { it.second.dueAt }.take(3)
             for ((target, plan) in due) {
                 currentCoroutineContext().ensureActive()
                 if (generation != store.generation()) break
@@ -201,7 +223,7 @@ class AutomaticRefreshWorker(context: Context, params: WorkerParameters) : Corou
         } finally {
             status.worker(started = false)
             BackgroundDeliveryCheck.worker(applicationContext, id.toString(), started = false)
-            if (completed && !isStopped) AutomaticRefreshScheduler.continueAfter(applicationContext, generation)
+            if (!isStopped) AutomaticRefreshScheduler.continueAfter(applicationContext, generation)
         }
         Result.success()
     }

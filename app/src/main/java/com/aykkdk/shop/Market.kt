@@ -21,9 +21,10 @@ enum class Market(val label: String, val host: String) {
         shopeeSort: String = "relevancy", shopeeMall: Boolean = false, shopeePreferred: Boolean = false,
         shopeeCondition: String = "", facebookSort: String = FacebookFilters.DEFAULT_SORT,
         facebookLocationId: String = FacebookLocation.DEFAULT_ID,
-        rutenSort: String = ""): String {
+        rutenSort: String = "",
+        boboArea: String = "0", boboAgent: String = "0"): String {
         if (this == IOPEN) return IOpenSearch.url(keyword)
-        if (this == BBOBO) return BoboSearch.url(keyword, min, max, page, boboMall)
+        if (this == BBOBO) return BoboSearch.url(keyword, min, max, page, boboMall, boboArea, boboAgent)
         if (this == FACEBOOK) return FacebookLocation.searchUrl(keyword, min, max, facebookSort, facebookLocationId)
         val selectedPage = page.coerceIn(1, 20)
         val b = Uri.Builder().scheme("https").authority(host)
