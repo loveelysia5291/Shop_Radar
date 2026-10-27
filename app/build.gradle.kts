@@ -37,7 +37,8 @@ android {
                 keyAlias = providers.gradleProperty("releaseKeyAlias").orNull?.takeIf { it.isNotBlank() }
                     ?: System.getenv("RELEASE_KEY_ALIAS")
                 keyPassword = providers.gradleProperty("releaseKeyPassword").orNull?.takeIf { it.isNotBlank() }
-                    ?: System.getenv("RELEASE_KEY_PASSWORD")
+                    ?: System.getenv("RELEASE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+                    ?: storePassword
             }
         }
     }
@@ -53,7 +54,16 @@ android {
             isDebuggable = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val releaseSign = signingConfigs.getByName("release")
-            signingConfig = if (releaseSign.storeFile?.exists() == true) releaseSign else signingConfigs.getByName("debug")
+            val releasePathEnv = System.getenv("RELEASE_KEYSTORE_PATH")
+            if (releaseSign.storeFile?.exists() == true) {
+                signingConfig = releaseSign
+            } else if (!releasePathEnv.isNullOrBlank()) {
+                throw org.gradle.api.GradleException(
+                    "RELEASE_KEYSTORE_PATH was set to '$releasePathEnv' but file does not exist! Aborting to prevent unsigned or debug fallback."
+                )
+            } else {
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 }

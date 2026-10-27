@@ -10,6 +10,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.RELEASE_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.RELEASE_KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS || secrets.RELEASE_KEY_ALIAS || 'key0' }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.RELEASE_KEY_PASSWORD }}
 
     steps:
       - name: Checkout repository
@@ -28,12 +33,13 @@ jobs:
 
       - name: Prepare Release Keystore
         id: keystore
-        if: env.HAS_KEYSTORE == 'true'
-        env:
-          HAS_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' }}
+        if: ${{ (secrets.KEYSTORE_BASE64 != '') || (secrets.RELEASE_KEYSTORE_BASE64 != '') }}
         run: |
-          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/release.keystore"
-          echo "keystore_path=$RUNNER_TEMP/release.keystore" >> $GITHUB_OUTPUT
+          set -e
+          KS="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KS"
+          echo "keystore_path=$KS" >> "$GITHUB_OUTPUT"
+          echo "Release keystore prepared at $KS"
 
       - name: Build Debug APK
         run: gradle :app:assembleDebug --stacktrace
@@ -41,10 +47,23 @@ jobs:
       - name: Build Release APK
         env:
           RELEASE_KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
-          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ env.KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
         run: gradle :app:assembleRelease --stacktrace
+
+      - name: Verify Release APK Signature
+        run: |
+          set -e
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          BT=$(ls -d "$SDK"/build-tools/* 2>/dev/null | sort -V | tail -1)
+          APP=$(ls app/build/outputs/apk/release/*.apk 2>/dev/null | head -1)
+          if [ -n "$APP" ]; then
+            echo "== Verifying signature for $APP with $BT/apksigner =="
+            "$BT/apksigner" verify --print-certs "$APP" | grep -E 'Signer #1 certificate (DN|SHA-256)' || true
+          else
+            echo "::warning::No release APK found in app/build/outputs/apk/release/"
+          fi
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
