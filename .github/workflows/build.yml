@@ -70,7 +70,7 @@ jobs:
           APP=$(ls app/build/outputs/apk/release/*.apk 2>/dev/null | head -1)
           if [ -n "$APP" ]; then
             echo "== Verifying signature for $APP with $BT/apksigner =="
-            "$BT/apksigner" verify --print-certs "$APP" | grep -E 'Signer #1 certificate (DN|SHA-256)' || true
+            "$BT/apksigner" verify --print-certs -v "$APP"
           else
             echo "::warning::No release APK found in app/build/outputs/apk/release/"
           fi
