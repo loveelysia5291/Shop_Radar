@@ -10,11 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.RELEASE_KEYSTORE_BASE64 }}
-      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.RELEASE_KEYSTORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.KEY_ALIAS || secrets.RELEASE_KEY_ALIAS || 'key0' }}
-      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.RELEASE_KEY_PASSWORD }}
 
     steps:
       - name: Checkout repository
@@ -33,13 +28,21 @@ jobs:
 
       - name: Prepare Release Keystore
         id: keystore
-        if: ${{ (secrets.KEYSTORE_BASE64 != '') || (secrets.RELEASE_KEYSTORE_BASE64 != '') }}
+        env:
+          KS1: ${{ secrets.KEYSTORE_BASE64 }}
+          KS2: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
           set -e
-          KS="$RUNNER_TEMP/release.jks"
-          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KS"
-          echo "keystore_path=$KS" >> "$GITHUB_OUTPUT"
-          echo "Release keystore prepared at $KS"
+          KS_BASE64="${KS1:-$KS2}"
+          if [ -n "$KS_BASE64" ]; then
+            KS="$RUNNER_TEMP/release.jks"
+            printf '%s' "$KS_BASE64" | base64 -d > "$KS"
+            echo "keystore_path=$KS" >> "$GITHUB_OUTPUT"
+            echo "Release keystore prepared at $KS"
+          else
+            echo "::warning::No keystore secret found (KEYSTORE_BASE64 or RELEASE_KEYSTORE_BASE64 is empty)."
+            echo "keystore_path=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build Debug APK
         run: gradle :app:assembleDebug --stacktrace
@@ -47,10 +50,17 @@ jobs:
       - name: Build Release APK
         env:
           RELEASE_KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
-          RELEASE_KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ env.KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
-        run: gradle :app:assembleRelease --stacktrace
+          P1: ${{ secrets.KEYSTORE_PASSWORD }}
+          P2: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          A1: ${{ secrets.KEY_ALIAS }}
+          A2: ${{ secrets.RELEASE_KEY_ALIAS }}
+          K1: ${{ secrets.KEY_PASSWORD }}
+          K2: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          export RELEASE_KEYSTORE_PASSWORD="${P1:-$P2}"
+          export RELEASE_KEY_ALIAS="${A1:-${A2:-key0}}"
+          export RELEASE_KEY_PASSWORD="${K1:-$K2}"
+          gradle :app:assembleRelease --stacktrace
 
       - name: Verify Release APK Signature
         run: |
