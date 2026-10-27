@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
@@ -49,16 +49,17 @@ object RutenSearch {
         )
     }
     suspend fun search(keyword: String, min: String, max: String, page: Int = 1, categoryId: String = "",
-        onProgress: suspend (List<Product>) -> Unit = {}): List<Product> = withContext(Dispatchers.IO) {
+        sort: String = "", onProgress: suspend (List<Product>) -> Unit = {}): List<Product> = withContext(Dispatchers.IO) {
         val result = mutableListOf<Product>()
         val auctionIds = linkedSetOf<String>()
         // Publish each complete batch as soon as its real detail response arrives.
         for (batch in 0..1) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             val builder = Uri.parse("https://rtapi.ruten.com.tw/api/search/v4/index.php/core/prod").buildUpon()
-                .appendQueryParameter("sort", "new/dc")
                 .appendQueryParameter("offset", (((page.coerceIn(1, 20) - 1) * 80) + batch * 40 + 1).toString())
                 .appendQueryParameter("limit", "40")
+            val validSort = RutenFilters.sort(sort)
+            if (validSort.isNotBlank()) builder.appendQueryParameter("sort", validSort)
             if (keyword.isNotBlank()) builder.appendQueryParameter("q", keyword)
             RutenCategories.validId(categoryId)?.let { builder.appendQueryParameter("cateid", it) }
             if (min.isNotBlank() || max.isNotBlank()) builder.appendQueryParameter("prc.now", "$min-$max")

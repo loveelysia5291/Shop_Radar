@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -115,6 +115,7 @@ class SearchHistoryTest {
         assertEquals(listOf("price_asc", "price_desc"), ShopeeFilters.sorts.map { it.first }.filter { it.startsWith("price_") })
         assertEquals(listOf("price_ascend", "price_descend"), FacebookFilters.sorts.map { it.first }.filter { it.startsWith("price_") })
         assertEquals(listOf("curp", "-curp"), YahooFilters.sorts.map { it.first }.filter { it.endsWith("curp") })
+        assertEquals(listOf("prc/ac", "prc/dc"), RutenFilters.sorts.map { it.first }.filter { it.startsWith("prc/") })
         assertEquals(listOf("價位低至高", "價位高至低"), SearchHistoryCriteria.CAROUSELL_SORTS.filter { it.startsWith("價位") })
         listOf("價位低至高", "價位高至低").forEach { oldValue ->
             val criteria = SearchHistoryCriteria(Market.CAROUSELL, "手機", sort = oldValue)

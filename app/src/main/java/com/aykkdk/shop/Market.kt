@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.net.Uri
 import org.json.JSONObject
@@ -20,7 +20,8 @@ enum class Market(val label: String, val host: String) {
         yahooState: String = "0", yahooSort: String = "", rutenCategoryId: String? = null, boboMall: String = "0",
         shopeeSort: String = "relevancy", shopeeMall: Boolean = false, shopeePreferred: Boolean = false,
         shopeeCondition: String = "", facebookSort: String = FacebookFilters.DEFAULT_SORT,
-        facebookLocationId: String = FacebookLocation.DEFAULT_ID): String {
+        facebookLocationId: String = FacebookLocation.DEFAULT_ID,
+        rutenSort: String = ""): String {
         if (this == IOPEN) return IOpenSearch.url(keyword)
         if (this == BBOBO) return BoboSearch.url(keyword, min, max, page, boboMall)
         if (this == FACEBOOK) return FacebookLocation.searchUrl(keyword, min, max, facebookSort, facebookLocationId)
@@ -41,7 +42,9 @@ enum class Market(val label: String, val host: String) {
                     b.appendPath("search").appendPath(keyword).appendPath("")
                     category?.let { b.appendQueryParameter("cateid", it) }
                 }
-                b.appendQueryParameter("sort", "new/dc").appendQueryParameter("pg", selectedPage.toString())
+                val validSort = RutenFilters.sort(rutenSort)
+                if (validSort.isNotBlank()) b.appendQueryParameter("sort", validSort)
+                b.appendQueryParameter("pg", selectedPage.toString())
                 if (min.isNotBlank() || max.isNotBlank()) b.appendQueryParameter("prc.now", "$min-$max")
             }
             CAROUSELL -> {

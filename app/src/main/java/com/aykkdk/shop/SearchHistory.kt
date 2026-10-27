@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -41,7 +41,8 @@ internal data class SearchHistoryCriteria(
             Market.YAHOO -> base.copy(sort = sort.takeIf { value -> YahooFilters.sorts.any { it.first == value } }.orEmpty(),
                 yahooState = yahooState.takeIf { value -> YahooFilters.states.any { it.first == value } } ?: "0",
                 mainCategory = categoryPair.first, category = categoryPair.second)
-            Market.RUTEN -> base.copy(mainCategory = categoryPair.first, category = categoryPair.second)
+            Market.RUTEN -> base.copy(sort = RutenFilters.sort(sort),
+                mainCategory = categoryPair.first, category = categoryPair.second)
             Market.BBOBO -> base.copy(boboMall = BoboSearch.zone(boboMall), category = BoboSearch.category(category))
             Market.IOPEN -> base
         }
@@ -75,7 +76,7 @@ internal data class SearchHistoryCriteria(
                 add(YahooFilters.sorts.firstOrNull { it.first == sort }?.second ?: "最相關")
                 add(YahooFilters.states.firstOrNull { it.first == yahooState }?.second ?: "全部")
             }
-            Market.RUTEN -> add("最新")
+            Market.RUTEN -> add(RutenFilters.sorts.firstOrNull { it.first == sort }?.second ?: "熱門")
             Market.BBOBO -> add(BoboSearch.malls.firstOrNull { it.first == boboMall }?.second ?: "二手商城")
             Market.IOPEN -> Unit
         }

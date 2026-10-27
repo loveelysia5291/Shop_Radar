@@ -396,6 +396,8 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     var rutenMainCategory by rememberSaveable { mutableStateOf("") }
     var rutenCategory by rememberSaveable { mutableStateOf("") }
     var appliedRutenCategory by remember { mutableStateOf("") }
+    var rutenSort by rememberSaveable { mutableStateOf("") }
+    var appliedRutenSort by remember { mutableStateOf("") }
     var yahooSubcategory by rememberSaveable { mutableStateOf("") }
     var yahooState by rememberSaveable { mutableStateOf("0") }
     var yahooSort by rememberSaveable { mutableStateOf("") }
@@ -437,7 +439,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                 mainCategory = carousellMainCategory, category = carousellCategory)
             Market.YAHOO -> SearchHistoryCriteria(historyMarket, query, min, max, sort = yahooSort,
                 yahooState = yahooState, mainCategory = yahooMainCategory, category = yahooSubcategory)
-            Market.RUTEN -> SearchHistoryCriteria(historyMarket, query, min, max,
+            Market.RUTEN -> SearchHistoryCriteria(historyMarket, query, min, max, sort = rutenSort,
                 mainCategory = rutenMainCategory, category = rutenCategory)
             Market.FACEBOOK -> SearchHistoryCriteria(historyMarket, query, min, max, sort = facebookSort)
             Market.BBOBO -> SearchHistoryCriteria(historyMarket, query, min, max, boboMall = boboMall, category = boboCategory)
@@ -464,7 +466,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                 yahooSort = criteria.sort; yahooState = criteria.yahooState
                 yahooMainCategory = criteria.mainCategory; yahooSubcategory = criteria.category
             }
-            Market.RUTEN -> { rutenMainCategory = criteria.mainCategory; rutenCategory = criteria.category }
+            Market.RUTEN -> { rutenSort = criteria.sort; rutenMainCategory = criteria.mainCategory; rutenCategory = criteria.category }
             Market.FACEBOOK -> facebookSort = criteria.sort
             Market.BBOBO -> { boboMall = criteria.boboMall; boboCategory = criteria.category }
             Market.IOPEN -> Unit
@@ -1062,7 +1064,8 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                         if (SearchPageLoading.infinite(market)) 1 else appliedPage, appliedCarousellSortBy, appliedCarousellCategory.ifBlank { null }, appliedYahooState, appliedYahooSort,
                         rutenCategoryId = appliedRutenCategory, boboMall = appliedBoboMall, shopeeSort = appliedShopeeSort,
                         shopeeMall = appliedShopeeMall, shopeePreferred = appliedShopeePreferred,
-                        shopeeCondition = appliedShopeeCondition, facebookSort = appliedFacebookSort), token, quickSearch = true,
+                        shopeeCondition = appliedShopeeCondition, facebookSort = appliedFacebookSort,
+                        rutenSort = appliedRutenSort), token, quickSearch = true,
                     requestedPage = appliedPage, previousPageUrls = previousSearchPageUrls, minimumPrice = appliedMin.toLongOrNull() ?: 0,
                     maximumPrice = appliedMax.toLongOrNull() ?: Long.MAX_VALUE)
         }
@@ -1427,8 +1430,12 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                             FacebookFilters.sorts, onSelect = { facebookSort = it })
                     }
                     if (selected == Market.RUTEN.label) item {
-                        CategorySelectors(Market.RUTEN, rutenMainCategory, rutenCategory) { main, category ->
-                            rutenMainCategory = main; rutenCategory = category
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CategoryDropdown("排序", RutenFilters.sorts.firstOrNull { it.first == rutenSort }?.second ?: "熱門",
+                                RutenFilters.sorts, onSelect = { rutenSort = it })
+                            CategorySelectors(Market.RUTEN, rutenMainCategory, rutenCategory) { main, category ->
+                                rutenMainCategory = main; rutenCategory = category
+                            }
                         }
                     }
                     if (selected == Market.YAHOO.label) item {
@@ -1470,6 +1477,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                                     previousSearchPageUrls = emptySet()
                                     searchPageCount = null
                                     appliedRutenCategory = if (selected == Market.RUTEN.label) rutenCategory else ""
+                                    appliedRutenSort = if (selected == Market.RUTEN.label) rutenSort else ""
                                     appliedYahooState = yahooState; appliedYahooSort = yahooSort; appliedBoboMall = BoboSearch.zone(boboMall)
                                     appliedBoboCategory = BoboSearch.category(boboCategory)
                                     appliedFacebookSort = facebookSort
@@ -1499,7 +1507,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                             appliedPage = searchPage; hasCompletedSearch = false
                             resultRevision++; products.clear(); stagedProducts.clear(); queue = arrayListOf(); fetching = true
                             resultNote = "抓取中，請稍候…"; browserFallback = false
-                            backgroundCapture = SearchCapture(Market.RUTEN, Market.RUTEN.search(appliedQuery, appliedMin, appliedMax, page = appliedPage, rutenCategoryId = appliedRutenCategory), searchToken, quickSearch = true)
+                            backgroundCapture = SearchCapture(Market.RUTEN, Market.RUTEN.search(appliedQuery, appliedMin, appliedMax, page = appliedPage, rutenCategoryId = appliedRutenCategory, rutenSort = appliedRutenSort), searchToken, quickSearch = true)
                         }) { Text("改用露天網頁搜尋") }
                     }
                     }
