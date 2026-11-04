@@ -38,6 +38,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.lightColorScheme as miuixLightColorScheme
+import top.yukonga.miuix.kmp.theme.darkColorScheme as miuixDarkColorScheme
+import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -171,8 +175,13 @@ private val RadarDarkColors = darkColorScheme(
 )
 
 @Composable
-internal fun RadarLiquidTheme(dark: Boolean, content: @Composable () -> Unit) =
-    MaterialTheme(colorScheme = if (dark) RadarDarkColors else RadarLightColors, content = content)
+internal fun RadarLiquidTheme(dark: Boolean, content: @Composable () -> Unit) {
+    val miuixColors = if (dark) miuixDarkColorScheme() else miuixLightColorScheme()
+    val materialColors = if (dark) RadarDarkColors else RadarLightColors
+    MiuixTheme(colors = miuixColors) {
+        MaterialTheme(colorScheme = materialColors, content = content)
+    }
+}
 
 @Composable
 private fun LiquidGlassSurface(
@@ -180,14 +189,8 @@ private fun LiquidGlassSurface(
     shape: Shape = RoundedCornerShape(26.dp),
     content: @Composable BoxScope.() -> Unit
 ) {
-    Surface(
-        modifier = modifier,
-        shape = shape,
-        color = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-        shadowElevation = 2.dp,
-        tonalElevation = 0.dp
+    MiuixCard(
+        modifier = modifier
     ) {
         Box(content = content)
     }
@@ -197,15 +200,11 @@ private fun LiquidGlassSurface(
 private fun GlassCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val bounds = remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     CompositionLocalProvider(LocalCardMenuBounds provides bounds) {
-    Surface(
-        modifier = modifier.onGloballyPositioned { bounds.value = it.boundsInWindow() },
-        shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
-        content = content
-    )
+        MiuixCard(
+            modifier = modifier.onGloballyPositioned { bounds.value = it.boundsInWindow() }
+        ) {
+            content()
+        }
     }
 }
 
