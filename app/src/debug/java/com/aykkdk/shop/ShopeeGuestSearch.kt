@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.content.Context
 import androidx.compose.material3.Checkbox
@@ -9,7 +9,7 @@ import java.net.URI
 
 /** Session-only opt-in experiment. Never changes the sign-in browser or background reads. */
 internal object ShopeeGuestSearch {
-    var enabled by mutableStateOf(false)
+    var enabled by mutableStateOf(true)
 
     fun allows(request: SearchCapture): Boolean = enabled && request.market == Market.SHOPEE &&
         request.quickSearch && !request.scanSubscription && !request.backgroundRead &&

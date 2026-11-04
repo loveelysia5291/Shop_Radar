@@ -1,16 +1,25 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.content.Context
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import java.net.URI
 
-/** No anonymous experiment, injected script or interception implementation in Release. */
-@Suppress("UNUSED_PARAMETER")
 internal object ShopeeGuestSearch {
-    const val enabled = false
-    fun allows(request: SearchCapture) = false
-    fun script(context: Context, request: SearchCapture) = ""
+    var enabled by mutableStateOf(true)
+
+    fun allows(request: SearchCapture): Boolean = enabled && request.market == Market.SHOPEE &&
+        request.quickSearch && !request.scanSubscription && !request.backgroundRead &&
+        publicSearch(request.url)
+
+    private fun publicSearch(url: String): Boolean = ShopeeLoginPolicy.publicSearch(url)
+
+    fun script(context: Context, request: SearchCapture): String =
+        if (allows(request)) CaptureAssets.read(context, "shopee-guest-search-debug.js") + ";\n" else ""
+
     fun blockLoginRedirect(request: SearchCapture, destination: String, hasProducts: Boolean, userGesture: Boolean,
-        emptyAttempted: Boolean = false) = false
+        emptyAttempted: Boolean = false): Boolean =
+        allows(request) && (hasProducts || !emptyAttempted) && !userGesture && ShopeeLoginPolicy.officialPage(destination) &&
+            runCatching { URI(destination).path.trimEnd('/') in setOf("/buyer/login", "/login") }.getOrDefault(false)
 }
 
 @Composable

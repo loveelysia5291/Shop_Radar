@@ -2185,8 +2185,16 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
     var linkRequestId by remember { mutableIntStateOf(0) }
     var pendingShopRemoval by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingProductRemoval by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var notificationGranted by remember { mutableStateOf(Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notificationGranted = granted
+        if (!granted) onWarning("未允許通知權限，背景將無法接收新品與降價提醒。")
+    }
     val refreshingTargets by SubscriptionRefreshQueue.running.collectAsState()
     fun importLink(input: String) {
+        if (!notificationGranted && RefreshNotificationAccess.needsPermission(context)) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         linkJob?.cancel()
         focusManager.clearFocus(force = true)
         keyboard?.hide()
@@ -2236,6 +2244,13 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
         item(span = { GridItemSpan(maxLineSpan) }) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             Column(Modifier.widthIn(max = RadarLayoutPolicy.FORM_MAX_WIDTH.dp).fillMaxWidth()) {
+            if (!notificationGranted) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
+                        Text("允許訂閱通知")
+                    }
+                }
+            }
             OutlinedTextField(url, { url = it }, label = { Text("店家或商品網址") },
                 enabled = !resolvingLink, shape = RoundedCornerShape(16.dp), maxLines = 2,
                 modifier = Modifier.fillMaxWidth())

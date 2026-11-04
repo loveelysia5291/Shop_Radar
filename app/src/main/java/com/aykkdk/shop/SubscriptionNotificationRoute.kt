@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import java.net.URLEncoder
 import java.util.UUID
@@ -26,8 +26,14 @@ internal data class SubscriptionNotificationText(val title: String, val text: St
         fun build(target: RefreshTarget, alerts: List<ProductSubscriptionAlert>, record: org.json.JSONObject? = null): SubscriptionNotificationText? {
             val visible = alerts.filter(BackgroundAlertJournal::visible).distinctBy(BackgroundAlertJournal::identity)
             if (visible.isEmpty()) return null
-            if (target.kind != RefreshKind.SHOP) return SubscriptionNotificationText("訂閱有更新",
-                visible.joinToString("\n") { "${it.shop} · ${it.title} · ${it.kind}" })
+            if (target.kind != RefreshKind.SHOP) {
+                val lines = visible.map { alert ->
+                    val price = record?.optLong("price", -1L) ?: -1L
+                    val priceText = if (price >= 0 && alert.kind == "降價") "（現價 NT$$price）" else ""
+                    "${alert.shop} · ${alert.title} · ${alert.kind}$priceText"
+                }
+                return SubscriptionNotificationText("訂閱有更新", lines.joinToString("\n"))
+            }
             val current = record?.let { saved -> ShopNewItems.read(saved).filter {
                 it.url in ShopNewItems.latestUrls(saved) && BackgroundAlertJournal.visible(
                     ProductSubscriptionAlert(it.shop, it.title, "新品", it.isAdult, it.url))

@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.content.Context
 
@@ -48,6 +48,7 @@ internal object SubscriptionImporter {
             prefs.edit().putString(target, saved.toString()).commit()
         }
         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.SHOP, target))
+        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, target), 30)
         return ImportedSubscription("已訂閱店家，正在讀取名稱與建立商品基準。", RefreshKind.SHOP)
     }
 

@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -160,9 +160,10 @@ object ProductSubscriptionDecision {
         val title = snapshot.title ?: item.optString("title")
         val shop = item.optString("shop").ifBlank { item.optString("platform") }
         val alert = when {
-            snapshot.status == "sold" && oldStatus != "sold" -> ProductSubscriptionAlert(shop, title, "已售出／缺貨", item.optBoolean("isAdult"))
-            snapshot.status == "removed" && oldStatus != "removed" -> ProductSubscriptionAlert(shop, title, "已下架／失效", item.optBoolean("isAdult"))
-            snapshot.status !in setOf("sold", "removed") && snapshot.price != null && oldPrice >= 0 && snapshot.price < oldPrice -> ProductSubscriptionAlert(shop, title, "降價", item.optBoolean("isAdult"))
+            snapshot.status == "sold" && oldStatus != "sold" -> ProductSubscriptionAlert(shop, title, "已售出／缺貨", item.optBoolean("isAdult"), productUrl = item.optString("url"))
+            snapshot.status == "removed" && oldStatus != "removed" -> ProductSubscriptionAlert(shop, title, "已下架／失效", item.optBoolean("isAdult"), productUrl = item.optString("url"))
+            snapshot.status !in setOf("sold", "removed") && snapshot.price != null && oldPrice >= 0 && snapshot.price < oldPrice ->
+                ProductSubscriptionAlert(shop, title, "降價", item.optBoolean("isAdult"), productUrl = item.optString("url"))
             else -> null
         }
         item.put("lastAttemptAt", now)

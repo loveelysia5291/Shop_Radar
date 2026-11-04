@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import org.junit.After
 import org.junit.Assert.*
@@ -7,7 +7,7 @@ import org.junit.Test
 class ShopeeGuestSearchTest {
     private val search = SearchCapture(Market.SHOPEE, "https://shopee.tw/search?keyword=phone", 1, quickSearch = true)
 
-    @After fun reset() { ShopeeGuestSearch.enabled = false }
+    @After fun reset() { ShopeeGuestSearch.enabled = true }
 
     @Test fun anonymousExperimentRequiresExplicitSessionOptIn() {
         ShopeeGuestSearch.enabled = false
