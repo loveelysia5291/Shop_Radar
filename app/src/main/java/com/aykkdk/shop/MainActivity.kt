@@ -357,6 +357,17 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     val navigationScope = rememberCoroutineScope()
     val tab = pager.currentPage
     LaunchedEffect(openAuctions) { if (openAuctions > 0) pager.animateScrollToPage(2) }
+    LaunchedEffect(pager.isScrollInProgress) {
+        if (!pager.isScrollInProgress && kotlin.math.abs(pager.currentPageOffsetFraction) > 0.001f) {
+            val target = if (kotlin.math.abs(pager.currentPageOffsetFraction) >= 0.5f) {
+                if (pager.currentPageOffsetFraction > 0) (pager.currentPage + 1).coerceAtMost(2)
+                else (pager.currentPage - 1).coerceAtLeast(0)
+            } else {
+                pager.currentPage
+            }
+            pager.animateScrollToPage(target, animationSpec = tween(220))
+        }
+    }
     var warning by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(shareError) {
         if (shareError != null) { warning = shareError; onShareErrorConsumed() }
