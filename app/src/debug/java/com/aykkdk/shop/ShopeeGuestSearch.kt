@@ -9,7 +9,7 @@ import java.net.URI
 
 /** Session-only opt-in experiment. Never changes the sign-in browser or background reads. */
 internal object ShopeeGuestSearch {
-    var enabled by mutableStateOf(true)
+    var enabled by mutableStateOf(false)
 
     fun allows(request: SearchCapture): Boolean = enabled && request.market == Market.SHOPEE &&
         request.quickSearch && !request.scanSubscription && !request.backgroundRead &&

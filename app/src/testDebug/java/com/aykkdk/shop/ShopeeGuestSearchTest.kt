@@ -7,7 +7,7 @@ import org.junit.Test
 class ShopeeGuestSearchTest {
     private val search = SearchCapture(Market.SHOPEE, "https://shopee.tw/search?keyword=phone", 1, quickSearch = true)
 
-    @After fun reset() { ShopeeGuestSearch.enabled = true }
+    @After fun reset() { ShopeeGuestSearch.enabled = false }
 
     @Test fun anonymousExperimentRequiresExplicitSessionOptIn() {
         ShopeeGuestSearch.enabled = false

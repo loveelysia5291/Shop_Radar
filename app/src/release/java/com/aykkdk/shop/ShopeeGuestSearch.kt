@@ -5,7 +5,7 @@ import androidx.compose.runtime.*
 import java.net.URI
 
 internal object ShopeeGuestSearch {
-    var enabled by mutableStateOf(true)
+    var enabled by mutableStateOf(false)
 
     fun allows(request: SearchCapture): Boolean = enabled && request.market == Market.SHOPEE &&
         request.quickSearch && !request.scanSubscription && !request.backgroundRead &&
