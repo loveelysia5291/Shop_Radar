@@ -38,10 +38,11 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme as miuixLightColorScheme
-import top.yukonga.miuix.kmp.theme.darkColorScheme as miuixDarkColorScheme
-import top.yukonga.miuix.kmp.basic.Card as MiuixCard
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -174,23 +175,46 @@ private val RadarDarkColors = darkColorScheme(
     outline = Color(0xFF65748B)
 )
 
-@Composable
-internal fun RadarLiquidTheme(dark: Boolean, content: @Composable () -> Unit) {
-    val miuixColors = if (dark) miuixDarkColorScheme() else miuixLightColorScheme()
-    val materialColors = if (dark) RadarDarkColors else RadarLightColors
-    MiuixTheme(colors = miuixColors) {
-        MaterialTheme(colorScheme = materialColors, content = content)
+class SquircleShape(val cornerRadius: androidx.compose.ui.unit.Dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val radius = with(density) { cornerRadius.toPx() }.coerceAtMost(minOf(size.width, size.height) / 2f)
+        val path = Path().apply {
+            val w = size.width
+            val h = size.height
+            val c = radius * 0.55f
+            moveTo(radius, 0f)
+            lineTo(w - radius, 0f)
+            cubicTo(w - radius + c, 0f, w, radius - c, w, radius)
+            lineTo(w, h - radius)
+            cubicTo(w, h - radius + c, w - radius + c, h, w - radius, h)
+            lineTo(radius, h)
+            cubicTo(radius - c, h, 0f, h - radius + c, 0f, h - radius)
+            lineTo(0f, radius)
+            cubicTo(0f, radius - c, radius - c, 0f, radius, 0f)
+            close()
+        }
+        return Outline.Generic(path)
     }
 }
 
 @Composable
+internal fun RadarLiquidTheme(dark: Boolean, content: @Composable () -> Unit) =
+    MaterialTheme(colorScheme = if (dark) RadarDarkColors else RadarLightColors, content = content)
+
+@Composable
 private fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(26.dp),
+    shape: Shape = SquircleShape(26.dp),
     content: @Composable BoxScope.() -> Unit
 ) {
-    MiuixCard(
-        modifier = modifier
+    Surface(
+        modifier = modifier,
+        shape = shape,
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+        shadowElevation = 2.dp,
+        tonalElevation = 0.dp
     ) {
         Box(content = content)
     }
@@ -200,11 +224,15 @@ private fun LiquidGlassSurface(
 private fun GlassCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val bounds = remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     CompositionLocalProvider(LocalCardMenuBounds provides bounds) {
-        MiuixCard(
-            modifier = modifier.onGloballyPositioned { bounds.value = it.boundsInWindow() }
-        ) {
-            content()
-        }
+        Surface(
+            modifier = modifier.onGloballyPositioned { bounds.value = it.boundsInWindow() },
+            shape = SquircleShape(22.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+            content = content
+        )
     }
 }
 
