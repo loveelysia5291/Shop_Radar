@@ -46,6 +46,7 @@ class ProductSubscriptionStore(private val context: Context) {
         }
         prefs.edit().putString(url, item.toString()).apply()
         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.PRODUCT, url))
+        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), 30)
     }
     fun addPublicUrl(raw: String, initial: PublicProductSnapshot? = null): ProductSubscriptionAddResult = synchronized(SubscriptionMutations.lock) {
         val market = Market.fromPublicProductUrl(raw)

@@ -1,4 +1,4 @@
-﻿package com.aykkdk.shop
+package com.aykkdk.shop
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -207,6 +207,7 @@ internal object RefreshRunner {
                         controller!!.web.measure(View.MeasureSpec.makeMeasureSpec(metrics.widthPixels.coerceAtLeast(360), View.MeasureSpec.EXACTLY),
                             View.MeasureSpec.makeMeasureSpec(metrics.heightPixels.coerceAtLeast(640), View.MeasureSpec.EXACTLY))
                         controller!!.web.layout(0, 0, controller!!.web.measuredWidth, controller!!.web.measuredHeight)
+                        controller!!.web.onResume()
                     }
                 }
             } finally { readerJob.cancel(); controller?.close() }
@@ -232,6 +233,8 @@ internal object SubscriptionRefreshNotifications {
             .setSmallIcon(R.drawable.ic_notification).setContentTitle(content.title)
             .setContentText(content.text).setStyle(NotificationCompat.BigTextStyle().bigText(content.text))
             .setContentIntent(pending).setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
         if (target.kind == RefreshKind.SHOP) {
             val eventAt = SubscriptionNotificationOrder.eventTime(alerts, record, System.currentTimeMillis())
             builder.setWhen(eventAt).setShowWhen(true).setSortKey(SubscriptionNotificationOrder.sortKey(eventAt, target))

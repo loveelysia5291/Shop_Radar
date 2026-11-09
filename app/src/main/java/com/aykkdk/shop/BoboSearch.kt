@@ -145,7 +145,7 @@ internal object BoboSearch {
             add("SearchZone" to selected)
             add("SelectArea" to selectedArea)
             add("SelectAgent" to selectedAgent)
-            add("Page" to page.coerceIn(1, 500).toString())
+            add("Page" to page.coerceIn(1, 5000).toString())
             if (min.isNotBlank()) add("MinM" to min)
             if (max.isNotBlank()) add("MaxM" to max)
         }

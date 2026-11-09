@@ -23,6 +23,8 @@ class BoboSearchTest {
             assertTrue(url.contains("%26")); assertFalse(url.contains("KeyWord=手機 &"))
         }
         assertEquals("0", BoboSearch.zone("eshop"))
+        val highPageUrl = BoboSearch.url("手機", "", "", 671, "0")
+        assertTrue(highPageUrl.contains("Page=671"))
     }
 
     @Test fun areaAndStoreParametersMatchSuppliedExamples() {

@@ -70,10 +70,10 @@ internal class AutomaticRefreshStore(context: Context) {
 
 internal object RefreshNetwork {
     fun connected(context: Context): Boolean = runCatching {
-        val manager = context.getSystemService(ConnectivityManager::class.java)
-        val capabilities = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
-        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }.getOrDefault(false)
 }
 

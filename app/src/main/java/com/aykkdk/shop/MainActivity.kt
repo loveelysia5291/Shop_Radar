@@ -683,7 +683,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         resultNote = if (products.isEmpty()) "已停止搜尋。" else "已停止讀取更多結果；保留目前 ${products.count { AdultVisibility.visible(it) }} 件商品。"
     }
     fun selectResultsPage(page: Int, keepProducts: Boolean = false) {
-        if (page !in 1..(searchPageCount?.coerceIn(1, 500) ?: appliedPage)) return
+        if (page !in 1..(searchPageCount?.coerceIn(1, 5000) ?: appliedPage)) return
         val market = Market.values().firstOrNull { it.label == selected }
         if (market == null || !market.supportsSearch) return
         if (SearchPageLoading.infinite(market) && page != appliedPage) return
@@ -943,6 +943,11 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         resultNote = "正在重新讀取 ${request.market.label}商品…"
         backgroundCapture = request.copy(token = searchToken)
     }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) {
+            warning = "未允許通知權限，背景將無法接收新品與降價提醒。可隨時至手機設定開啟通知。"
+        }
+    }
     val shopeeRecoveryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         shopeeSignedIn = ShopeeWebConfiguration.canSearch()
         val retry = shopeeSearchRetry
@@ -1092,6 +1097,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         withFrameNanos { }
         delay(500)
         withContext(Dispatchers.IO) { AutomaticRefreshScheduler.initialize(context) }
+        if (RefreshNotificationAccess.needsPermission(context)) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
     LaunchedEffect(dispatch, searchToken) {
         if (dispatch > 0 && queue.isNotEmpty()) {
@@ -1608,7 +1616,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             products = products.filter { it.price >= (appliedMin.toLongOrNull() ?: 0) && it.price <= (appliedMax.toLongOrNull() ?: Long.MAX_VALUE) &&
                 BoboSearch.matchesCategory(it, appliedBoboCategory) },
             currentPage = appliedPage,
-            pageCount = searchPageCount?.coerceIn(1, 500) ?: appliedPage,
+            pageCount = searchPageCount?.coerceIn(1, 5000) ?: appliedPage,
             pageSelectionEnabled = selected in listOf(Market.BBOBO.label, Market.IOPEN.label),
             pageComplete = searchPageComplete,
             fetching = fetching,
@@ -1671,6 +1679,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                         shopsPrefs.edit().putString(previewShopUrl, saved.toString()).apply(); shopsVersion++
                         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.SHOP, previewShopUrl))
                         AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, previewShopUrl), 30)
+                        if (RefreshNotificationAccess.needsPermission(context)) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
                         showShopDetails = false; warning = "已新增訂閱：$previewShopName"
                     }
                 }.onFailure { warning = it.message ?: "無法新增店家訂閱，請重試。" }
@@ -2070,8 +2081,21 @@ private fun SearchResultsPage(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (pageSelectionEnabled) Box(Modifier.align(Alignment.CenterVertically)) {
                         OutlinedButton(onClick = { pagesExpanded = true }, enabled = !fetching) { Text("第 $currentPage／$pageCount 頁") }
+                        val selectablePages = remember(currentPage, pageCount) {
+                            if (pageCount <= 50) (1..pageCount).toList()
+                            else {
+                                buildSet {
+                                    add(1)
+                                    add(pageCount)
+                                    for (p in maxOf(1, currentPage - 10)..minOf(pageCount, currentPage + 10)) add(p)
+                                    for (step in listOf(5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000)) {
+                                        if (step in 1..pageCount) add(step)
+                                    }
+                                }.sorted()
+                            }
+                        }
                         DropdownMenu(expanded = pagesExpanded, onDismissRequest = { pagesExpanded = false }) {
-                            (1..pageCount).forEach { page -> DropdownMenuItem(text = { Text("第 $page 頁") }, onClick = {
+                            selectablePages.forEach { page -> DropdownMenuItem(text = { Text("第 $page 頁") }, onClick = {
                                 pagesExpanded = false
                                 if (page != currentPage) { manualRefreshing = false; onSelectPage(page) }
                             }) }

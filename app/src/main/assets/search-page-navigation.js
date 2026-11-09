@@ -2,7 +2,7 @@
 (() => {
   const wanted = Number(window.__shopRadarWantedPage || 1);
   const current = new URL(location.href);
-  const controls = [...document.querySelectorAll('.pagination,.pager,.pages,[class*="pagination"],[aria-label*="分頁"],[aria-label*="Pagination"],select[name*="page" i],select[id*="page" i]')];
+  const controls = [...document.querySelectorAll('.pagination,.pager,.pages,.pageswitch,.pageidlist,[class*="pagination"],[class*="pageswitch"],[class*="pageidlist"],[aria-label*="分頁"],[aria-label*="Pagination"],select[name*="page" i],select[id*="page" i]')];
   const links = [...document.querySelectorAll('a[href]')].filter(node => {
     if (!/^\d+$/.test((node.textContent || '').trim())) return false;
     try {
@@ -14,24 +14,30 @@
   });
   const nodes = [...new Set([...links, ...controls.flatMap(root => [...root.querySelectorAll('a,button,[role="button"],option')])])];
   const number = node => Number((node.textContent || '').trim().match(/^(?:第\s*)?(\d+)(?:\s*頁)?$/)?.[1]);
-  const pages = nodes.map(number).filter(n => Number.isInteger(n) && n > 0 && n <= 500);
+  const pages = nodes.map(number).filter(n => Number.isInteger(n) && n > 0 && n <= 5000);
   for (const root of controls) {
     const total = (root.textContent || '').match(/(?:共|總共|of)\s*(\d+)\s*(?:頁|pages?)?/i);
-    if (total && Number(total[1]) <= 500) pages.push(Number(total[1]));
+    if (total && Number(total[1]) <= 5000) pages.push(Number(total[1]));
     for (const node of root.querySelectorAll('a[href]')) {
-      if (!/末頁|最後|last/i.test((node.textContent || '') + ' ' + (node.getAttribute('aria-label') || ''))) continue;
+      const label = ((node.textContent || '') + ' ' + (node.getAttribute('aria-label') || '') + ' ' + (node.getAttribute('title') || '') + ' ' + (node.parentElement?.getAttribute('title') || '')).trim();
       try {
         const last = new URL(node.href, current);
         if (last.origin !== current.origin || last.pathname.toLowerCase() !== current.pathname.toLowerCase()) continue;
         for (const [key, value] of last.searchParams) {
-          if (/^(page|pageno|pageindex|pg|p)$/i.test(key) && /^\d+$/.test(value) && Number(value) <= 500)
-            pages.push(Number(value));
+          if (/^(page|pageno|pageindex|pg|p)$/i.test(key) && /^\d+$/.test(value)) {
+            const num = Number(value);
+            if (num > 0 && num <= 5000) {
+              if (/末頁|最後|last|下\d+頁|下一頁/i.test(label) || controls.length > 0) {
+                pages.push(num);
+              }
+            }
+          }
         }
       } catch (_) { }
     }
   }
   const totalPages = pages.length ? Math.max(...pages) : document.readyState === 'complete' ? 1 : 0;
-  const active = controls.flatMap(root => [...root.querySelectorAll('[aria-current="page"],.active,.current,.selected')])
+  const active = controls.flatMap(root => [...root.querySelectorAll('[aria-current="page"],.active,.current,.selected,.select')])
     .some(node => number(node) === wanted);
   if (wanted === 1 || active) return JSON.stringify({ready:true,pages:totalPages});
   const candidate = nodes.find(node => number(node) === wanted);
