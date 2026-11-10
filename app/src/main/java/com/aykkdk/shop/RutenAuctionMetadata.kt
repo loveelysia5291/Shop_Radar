@@ -34,6 +34,7 @@ internal object RutenAuctionMetadata {
         }
         ProductThumbnail.url(safe)
     }.orEmpty()
+    private fun safeImage(raw: String): Boolean = ProductThumbnail.url(raw) != null
 
     suspend fun read(id: String): JSONObject {
         require(idPattern.matches(id))
@@ -71,8 +72,15 @@ internal object RutenAuctionMetadata {
         require(amount != null) { "露天未提供可確認的出價。" }
         val name = bid?.optString("user_nick").orEmpty().trim().takeUnless { it == "null" }.orEmpty()
         val domain = item.optString("image_domain").trimEnd('/')
-        val file = item.optJSONArray("g_img")?.optString(0).orEmpty()
-        val image = "$domain/$file".takeIf { safeImage(it) }.orEmpty()
+        val file = item.optJSONArray("g_img")?.optString(0).orEmpty().trimStart('/')
+        val rawImage = if (domain.isNotBlank() && file.isNotBlank()) "$domain/$file" else ""
+        val safe = when {
+            rawImage.startsWith("https://") -> rawImage
+            rawImage.startsWith("//") -> "https:$rawImage"
+            rawImage.startsWith("http://") -> "https://" + rawImage.substring(7)
+            else -> rawImage
+        }
+        val image = ProductThumbnail.url(safe).orEmpty()
         return AuctionSnapshot(ShopText.title(item.getString("g_name")), amount, end, now,
             listOf(name).filter { it.isNotBlank() }, emptyList(), count, status == 9, image,
             startsAt = start, ended = ended)
