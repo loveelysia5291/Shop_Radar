@@ -87,15 +87,22 @@ internal object PublicProductWebReader {
                     val raw = suspendCancellableCoroutine<String> { continuation ->
                         view.evaluateJavascript("""(function(){
                             $dateScript
-                            return JSON.stringify({url:location.href,listedAt:listingDate.listedAt || '',listedAtEpochMillis:listingDate.listedAtEpochMillis || 0,html:Array.from(document.querySelectorAll('meta[property^="og:"],link[rel="canonical"],script[type="application/ld+json"]${if (market == Market.YAHOO) ",script#isoredux-data" else ""}')).map(n=>n.outerHTML).join('').slice(0,524288)});})()""") {
+                            var imgNode = document.querySelector('meta[property="og:image"],meta[name="og:image"],meta[name="twitter:image"],link[rel="image_src"]');
+                            var imgUrl = imgNode ? (imgNode.content || imgNode.href || '') : '';
+                            if (!imgUrl) {
+                                var el = document.querySelector('.gds-info-photo img, img[class*="product"], img[class*="gallery"], picture img, img[src*="http"]');
+                                if (el) imgUrl = el.currentSrc || el.src || '';
+                            }
+                            return JSON.stringify({url:location.href,listedAt:listingDate.listedAt || '',listedAtEpochMillis:listingDate.listedAtEpochMillis || 0,image:imgUrl,html:Array.from(document.querySelectorAll('meta[property^="og:"],meta[name^="og:"],meta[name^="twitter:"],link[rel="canonical"],link[rel="image_src"],script[type="application/ld+json"]${if (market == Market.YAHOO) ",script#isoredux-data" else ""}')).map(n=>n.outerHTML).join('').slice(0,524288)});})()""") {
                             if (continuation.isActive) continuation.resume(it)
                         }
                     }
                     val data = runCatching { JSONObject(JSONTokener(raw).nextValue() as? String ?: "") }.getOrNull() ?: continue
                     val final = data.optString("url")
                     if (!PublicProductParser.sameProductUrl(final, original)) continue
+                    val domImage = ProductThumbnail.url(data.optString("image"), original)
                     latest = PublicProductParser.parse(original, 200, data.optString("html"))
-                        .copy(resolvedUrl = Market.normalizePublicProductUrl(final))
+                        .let { p -> p.copy(resolvedUrl = Market.normalizePublicProductUrl(final), image = p.image ?: domImage) }
                     data.optString("listedAt").takeIf { it.isNotBlank() }?.let {
                         latest = latest.copy(listedAt = it, listedAtEpochMillis = data.optLong("listedAtEpochMillis").takeIf { at -> at > 0 })
                     }

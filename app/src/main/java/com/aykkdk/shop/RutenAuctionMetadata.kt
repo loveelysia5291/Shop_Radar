@@ -25,10 +25,15 @@ internal object RutenAuctionMetadata {
         is String -> listOf(image)
         else -> emptyList()
     }
-    fun image(item: JSONObject): String = images(item).firstOrNull { safeImage(it) }.orEmpty()
-    private fun safeImage(raw: String): Boolean = runCatching {
-        URI(raw).let { it.scheme == "https" && it.host != null && it.userInfo == null && it.port == -1 }
-    }.getOrDefault(false)
+    fun image(item: JSONObject): String = images(item).firstNotNullOfOrNull { raw ->
+        val safe = when {
+            raw.startsWith("https://") -> raw
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("http://") -> "https://" + raw.substring(7)
+            else -> raw
+        }
+        ProductThumbnail.url(safe)
+    }.orEmpty()
 
     suspend fun read(id: String): JSONObject {
         require(idPattern.matches(id))

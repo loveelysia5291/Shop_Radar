@@ -7,8 +7,33 @@ import org.json.JSONObject
 /** Only read image fields belonging to the already identified product. */
 internal object ProductThumbnail {
     fun url(raw: String, base: String? = null): String? = runCatching {
-        if (raw.isBlank() || raw.trim() in setOf("null", "undefined") || raw.length > 8192) return null
-        val uri = base?.let { URI(it).resolve(raw.trim()) } ?: URI(raw.trim())
+        var text = raw.trim()
+        if (text.isBlank() || text in setOf("null", "undefined") || text.length > 8192) return null
+        if (text.startsWith("//")) text = "https:$text"
+        val resolved = if (base != null && !text.startsWith("http://") && !text.startsWith("https://")) {
+            runCatching {
+                val b = URI(base)
+                val baseScheme = b.scheme ?: "https"
+                val baseHost = b.host ?: ""
+                if (text.startsWith("/")) "$baseScheme://$baseHost$text"
+                else b.resolve(text).toString()
+            }.getOrDefault(text)
+        } else text
+
+        val ascii = if (resolved.any { it.code > 127 || it == ' ' }) {
+            buildString(resolved.length + 16) {
+                for (ch in resolved) {
+                    if (ch == ' ') append("%20")
+                    else if (ch.code > 127) {
+                        for (b in ch.toString().toByteArray(Charsets.UTF_8)) {
+                            append(String.format("%%%02X", b.toInt() and 0xFF))
+                        }
+                    } else append(ch)
+                }
+            }
+        } else resolved
+
+        val uri = URI(ascii)
         if (uri.scheme != "https" || uri.host.isNullOrBlank() || uri.userInfo != null || uri.port !in setOf(-1, 443)) null
         else uri.toASCIIString()
     }.getOrNull()

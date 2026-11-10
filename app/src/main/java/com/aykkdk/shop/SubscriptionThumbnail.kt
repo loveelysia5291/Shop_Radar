@@ -22,16 +22,36 @@ import org.json.JSONObject
 
 @Composable
 internal fun SubscriptionThumbnail(item: JSONObject, modifier: Modifier = Modifier.size(72.dp)) {
-    val image = ProductThumbnail.url(item.optString("image"))
     val context = LocalContext.current
     val url = item.optString("url")
-    LaunchedEffect(url, image) {
-        if (image != null) ImageCachePolicy.record(context, listOf(
-            Product(item.optString("title"), item.optLong("price", -1), item.optString("platform"), url, image)))
+    val itemImage = ProductThumbnail.url(item.optString("image"))
+    val cachedImage = remember(url) {
+        context.getSharedPreferences("image_cache_index", 0).getString(url, null)?.let { ProductThumbnail.url(it) }
     }
+    val effectiveImage = itemImage ?: cachedImage
+
+    LaunchedEffect(url, effectiveImage) {
+        if (effectiveImage != null) {
+            ImageCachePolicy.record(context, listOf(
+                Product(item.optString("title"), item.optLong("price", -1), item.optString("platform"), url, effectiveImage)))
+            if (item.optString("image").isBlank()) {
+                val prefs = context.getSharedPreferences("product_subscriptions_v1", 0)
+                prefs.getString(url, null)?.let { raw ->
+                    runCatching {
+                        val obj = JSONObject(raw)
+                        obj.put("image", effectiveImage)
+                        prefs.edit().putString(url, obj.toString()).apply()
+                    }
+                }
+            }
+        } else if (url.isNotBlank()) {
+            SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.PRODUCT, url))
+        }
+    }
+
     Box(modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center) {
         Icon(Icons.Default.ShoppingBag, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.outline)
-        if (image != null) AsyncImage(image, "商品縮圖", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (effectiveImage != null) AsyncImage(effectiveImage, "商品縮圖", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     }
 }

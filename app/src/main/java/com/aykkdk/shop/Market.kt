@@ -265,8 +265,15 @@ data class Product(val title: String, val price: Long, val platform: String, val
             // explicitly marks these as "無時間" rather than inventing a search time.
             if (!o.has("price") || o.optLong("price", -1) < 0 ||
                 o.optString("title").isBlank()) return null
+            val rawImg = o.optString("image").trim()
+            val safeImg = when {
+                rawImg.startsWith("https://") -> rawImg
+                rawImg.startsWith("//") -> "https:$rawImg"
+                rawImg.startsWith("http://") -> "https://" + rawImg.substring(7)
+                else -> rawImg
+            }
             return Product(ShopText.title(o.getString("title")).take(240), o.getLong("price"), market.label, url,
-                o.optString("image").takeIf { it.startsWith("https://") }.orEmpty(), listedAt, ShopText.shop(o.optString("shop")), o.optBoolean("isAdvertisement"),
+                ProductThumbnail.url(safeImg, url).orEmpty(), listedAt, ShopText.shop(o.optString("shop")), o.optBoolean("isAdvertisement"),
                 o.optBoolean("isAuction"), o.optLong("auctionEndsAt"), o.optString("highestBidder"),
                 o.optBoolean("auctionPriceKnown"), o.optBoolean("auctionCancelled"), o.optBoolean("isAdult") || AdultVisibility.adultText(o.optString("title")) || AdultVisibility.adultText(o.optString("category")), o.optLong("listedAtEpochMillis"), o.optString("category").trim().take(120),
                 o.optLong("auctionServerAt"), o.optInt("auctionBidCount", -1), o.optBoolean("auctionEnded"))

@@ -37,7 +37,9 @@ class ProductSubscriptionStore(private val context: Context) {
             .put("isAdult", product.isAdult || AdultVisibility.adultText(product.title))
             .put("shop", ShopText.shop(product.shop)).put("price", product.price)
             .put("status", item.optString("status", "unknown"))
-        ProductThumbnail.url(product.image)?.let { item.put("image", it) }
+        val cachedImage = context.getSharedPreferences("image_cache_index", 0).getString(url, null)
+        val imageToSave = ProductThumbnail.url(product.image) ?: cachedImage?.let { ProductThumbnail.url(it) }
+        imageToSave?.let { item.put("image", it) }
         if (product.category.isNotBlank()) item.put("category", product.category)
         if (product.listedAt.isNotBlank()) {
             if (product.listedAt != item.optString("listedAt")) item.remove("listedAtEpochMillis")
@@ -128,7 +130,7 @@ class ProductSubscriptionStore(private val context: Context) {
         // An explicit HTTP error is terminal; do not hide it behind another renderer attempt.
         if (publicPageStatus?.let { it != 200 } == true || snapshot.isAuction ||
             market !in setOf(Market.CAROUSELL, Market.SHOPEE, Market.FACEBOOK, Market.IOPEN, Market.YAHOO) ||
-            snapshot.status != "unknown" && (market in setOf(Market.CAROUSELL, Market.YAHOO) || !snapshot.listedAt.isNullOrBlank())) return snapshot
+            (snapshot.image != null && snapshot.status != "unknown" && (market in setOf(Market.CAROUSELL, Market.YAHOO) || !snapshot.listedAt.isNullOrBlank()))) return snapshot
         val rendered = PublicProductWebReader.read(context, raw)
         val preferred = if (rendered.status != "unknown" || snapshot.status == "unknown" && rendered.title != null) rendered else snapshot
         return preferred.copy(image = preferred.image ?: snapshot.image ?: rendered.image,
@@ -170,6 +172,13 @@ class ProductSubscriptionStore(private val context: Context) {
             if (!prefs.contains(url) || !allowed()) return@synchronized null
             val latest = JSONObject(prefs.getString(url, "{}") ?: "{}")
             val alert = ProductSubscriptionDecision.apply(latest, snapshot, System.currentTimeMillis())
+            if (latest.optString("image").isBlank()) {
+                val cached = context.getSharedPreferences("image_cache_index", 0).getString(url, null)
+                cached?.let { ProductThumbnail.url(it) }?.let { latest.put("image", it) }
+            }
+            latest.optString("image").takeIf { it.isNotBlank() }?.let { img ->
+                ImageCachePolicy.record(context, listOf(Product(latest.optString("title"), latest.optLong("price", -1), latest.optString("platform"), url, img)))
+            }
             if (retainAlerts && alert != null) BackgroundAlertJournal.append(latest, listOf(alert))
             if (!prefs.edit().putString(url, latest.toString()).commit()) return@synchronized null
             if (retainAlerts && alert != null) PendingAlertDelivery.enqueue(context)

@@ -19,7 +19,7 @@ object PublicProductParser {
         if (html.isBlank()) return PublicProductSnapshot(error = "商品頁沒有提供可確認的資料")
         val market = Market.fromPublicProductUrl(url) ?: return PublicProductSnapshot(error = "網址不支援")
         if (market == Market.BBOBO) return BoboProductSnapshot.parse(url, html).let { snapshot ->
-            if (snapshot.title == null) snapshot else snapshot.copy(image = verifiedMetadata(url, html)?.image)
+            if (snapshot.title == null) snapshot else snapshot.copy(image = snapshot.image ?: verifiedMetadata(url, html)?.image)
         }
         if (market == Market.RUTEN) return PublicProductSnapshot(error = "露天只使用公開商品資料端點確認庫存；不讀取商品頁備援")
         val metadata = verifiedMetadata(url, html)
@@ -69,7 +69,11 @@ object PublicProductParser {
             product.optString("name").takeIf { it.isNotBlank() }?.take(240) ?: yahooMetadata?.title ?: metadata?.title,
             if (status == "unknown") "平台未公開明確庫存狀態；保留上次狀態" else null,
             stockQuantity = inventory?.takeIf { status != "unknown" },
-            image = ProductThumbnail.fromJson(product.opt("image"), url) ?: metadata?.image, resolvedUrl = metadata?.resolvedUrl,
+            image = ProductThumbnail.fromJson(product.opt("image"), url) ?: metadata?.image ?: yahooMetadata?.image
+                ?: listOfNotNull(
+                    Regex("<(?:meta|link)[^>]+(?:content|href)=[\"']([^\"']+)[\"'][^>]+(?:og:image|twitter:image|image_src)", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1),
+                    Regex("<(?:meta|link)[^>]+(?:og:image|twitter:image|image_src)[^>]+(?:content|href)=[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
+                ).firstNotNullOfOrNull { ProductThumbnail.url(it, url) }, resolvedUrl = metadata?.resolvedUrl,
             auctionTypeKnown = yahooMetadata?.auctionTypeKnown == true,
             listedAt = yahooMetadata?.listedAt ?: listOf("datePosted", "datePublished").firstNotNullOfOrNull { publishedTime(product.optString(it)) },
             listedAtEpochMillis = yahooMetadata?.listedAtEpochMillis)
@@ -109,24 +113,25 @@ object PublicProductParser {
 
     /** A name/image can be public even when inventory is not; never infer stock from Open Graph. */
     private fun verifiedMetadata(url: String, html: String): PublicProductSnapshot? {
-        if (Market.fromPublicProductUrl(url) !in setOf(Market.SHOPEE, Market.CAROUSELL)) return null
         val meta = mutableMapOf<String, String>()
         val declared = mutableListOf<String>()
         for (tag in Regex("<(?:meta|link)\\b([^>]*)>", RegexOption.IGNORE_CASE).findAll(html)) {
             val attrs = Regex("([a-zA-Z][a-zA-Z0-9:_-]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
                 .findAll(tag.groupValues[1]).associate { it.groupValues[1].lowercase() to
                     decodeMetadata(if (it.groupValues[2].isNotEmpty()) it.groupValues[2] else it.groupValues[3]) }
-            val key = attrs["property"].orEmpty().lowercase()
+            val key = (attrs["property"] ?: attrs["name"]).orEmpty().lowercase()
             attrs["content"]?.let { meta[key] = it }
-            if (key == "og:url") attrs["content"]?.let(declared::add)
+            if (key in setOf("og:url", "twitter:url")) attrs["content"]?.let(declared::add)
             if ("canonical" in attrs["rel"].orEmpty().lowercase().split(Regex("\\s+"))) attrs["href"]?.let(declared::add)
+            if ("image_src" in attrs["rel"].orEmpty().lowercase().split(Regex("\\s+"))) attrs["href"]?.let { meta["image_src"] = it }
         }
-        if (declared.isEmpty() || declared.any { !sameProductUrl(it, url) }) return null
-        val title = meta["og:title"]?.replace(Regex("\\s*[|｜]\\s*(?:蝦皮購物|Shopee|旋轉拍賣|Carousell).*$", RegexOption.IGNORE_CASE), "")?.trim()
+        if (declared.isNotEmpty() && declared.none { sameProductUrl(it, url) }) return null
+        val title = meta["og:title"]?.replace(Regex("\\s*[|｜]\\s*(?:蝦皮購物|Shopee|旋轉拍賣|Carousell|跳蚤本舖|露天市集|露天拍賣|Yahoo拍賣).*$", RegexOption.IGNORE_CASE), "")?.trim()
             ?.takeIf { it.isNotBlank() && it.lowercase() !in setOf("登入", "login", "just a moment...", "access denied") }?.take(240)
-            ?: return null
-        val image = meta["og:image"]?.let { ProductThumbnail.url(it, url) }
-        return PublicProductSnapshot(title = title, image = image, resolvedUrl = Market.normalizePublicProductUrl(declared.first()),
+        val image = listOfNotNull(meta["og:image"], meta["og:image:url"], meta["twitter:image"], meta["twitter:image:src"], meta["image_src"])
+            .firstNotNullOfOrNull { ProductThumbnail.url(it, url) }
+        if (title == null && image == null) return null
+        return PublicProductSnapshot(title = title, image = image, resolvedUrl = declared.firstOrNull()?.let { Market.normalizePublicProductUrl(it) },
             error = "已取得商品名稱；平台未提供可確認的庫存狀態")
     }
     private fun decodeMetadata(raw: String): String = raw.replace("&quot;", "\"").replace("&#39;", "'")

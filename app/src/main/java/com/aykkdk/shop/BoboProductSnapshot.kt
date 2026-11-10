@@ -37,6 +37,11 @@ internal object BoboProductSnapshot {
             ?.let { element(it, "div", "pr-price") }?.let(::text)
             ?.let { Regex("(?:NT\\$|\\$)\\s*([\\d,]+)").find(it)?.groupValues?.get(1) }
             ?.replace(",", "")?.toLongOrNull()
+        val imageSrc = Regex("<(?:div|ul|li)[^>]*class=[\"'][^\"']*gds-info-photo[^\"']*[\"'][\\s\\S]*?<img\\b[^>]*\\bsrc=['\"]([^'\"]+)['\"]", RegexOption.IGNORE_CASE)
+            .find(source)?.groupValues?.get(1)
+            ?: Regex("<img\\b[^>]*\\bsrc=['\"]([^'\"]*(?:Goods_IMG|goods)[^'\"]*)['\"]", RegexOption.IGNORE_CASE)
+                .find(source)?.groupValues?.get(1)
+        val image = imageSrc?.let { ProductThumbnail.url(it, clean) }
         return PublicProductSnapshot(status = when {
             stock == null -> "unknown"
             stock > 0 -> "active"
@@ -44,7 +49,7 @@ internal object BoboProductSnapshot {
         }, price = price, title = title,
             error = if (stock == null) "平台未提供這件商品的明確庫存數；保留上次狀態" else null,
             shop = metadata.shop, listedAt = metadata.listedAt, category = metadata.category,
-            stockQuantity = stock)
+            stockQuantity = stock, image = image)
     }
 
     // Balance only the requested tag so nested DIVs cannot leak into adjacent/recommended products.
