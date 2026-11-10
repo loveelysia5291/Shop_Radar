@@ -114,7 +114,7 @@ internal fun AutomaticRefreshMenu(target: RefreshTarget, iconModifier: Modifier 
         header {
             Box {
                 menuButton()
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, shape = RoundedCornerShape(14.dp)) {
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     menuItems()
                 }
             }
