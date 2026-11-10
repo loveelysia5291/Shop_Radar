@@ -26,17 +26,38 @@ internal class AutomaticRefreshStore(context: Context) {
         val plan = decode(raw as? String) ?: return@mapNotNull null
         RefreshTarget(kind, key.substringAfter('|')) to plan
     }
+    fun isDisabled(target: RefreshTarget): Boolean =
+        prefs.getStringSet("disabled_targets", emptySet())?.contains(target.key) == true
     fun configure(target: RefreshTarget, intervalMinutes: Int?) {
         synchronized(lock) {
+            val disabled = (prefs.getStringSet("disabled_targets", emptySet()) ?: emptySet()).toMutableSet()
             val editor = prefs.edit().putLong("generation", generation() + 1)
-            if (intervalMinutes == null) editor.remove(target.key) else {
+            if (intervalMinutes == null) {
+                editor.remove(target.key)
+                disabled.add(target.key)
+            } else {
                 require(intervalMinutes in 15..10080)
                 val at = System.currentTimeMillis() + intervalMinutes * 60_000L
                 editor.putString(target.key, encode(RefreshPlan(intervalMinutes, at, revision = UUID.randomUUID().toString())))
+                disabled.remove(target.key)
             }
+            editor.putStringSet("disabled_targets", disabled)
             editor.commit()
         }
         if (intervalMinutes == null) BackgroundRefreshStatus(app).remove(target)
+        AutomaticRefreshScheduler.replace(app)
+    }
+    fun remove(target: RefreshTarget) {
+        synchronized(lock) {
+            val disabled = (prefs.getStringSet("disabled_targets", emptySet()) ?: emptySet()).toMutableSet()
+            disabled.remove(target.key)
+            prefs.edit()
+                .remove(target.key)
+                .putStringSet("disabled_targets", disabled)
+                .putLong("generation", generation() + 1)
+                .commit()
+        }
+        BackgroundRefreshStatus(app).remove(target)
         AutomaticRefreshScheduler.replace(app)
     }
     fun setSleep(value: RefreshSleep) {
@@ -84,28 +105,6 @@ internal object AutomaticRefreshScheduler {
     suspend fun initialize(context: Context) = withContext(Dispatchers.IO) {
         val store = AutomaticRefreshStore(context)
         val manager = WorkManager.getInstance(context)
-        // Ensure all existing subscriptions and auctions have an automatic refresh plan
-        val shopPrefs = context.getSharedPreferences("shop_subscriptions_v2", 0)
-        shopPrefs.all.keys.forEach { url ->
-            val target = RefreshTarget(RefreshKind.SHOP, url)
-            if (store.exists(target) && store.plan(target) == null) {
-                store.configure(target, 30)
-            }
-        }
-        val productPrefs = context.getSharedPreferences("product_subscriptions_v1", 0)
-        productPrefs.all.keys.forEach { url ->
-            val target = RefreshTarget(RefreshKind.PRODUCT, url)
-            if (store.exists(target) && store.plan(target) == null) {
-                store.configure(target, 30)
-            }
-        }
-        AuctionStore(context).list().forEach { item ->
-            val url = item.optString("url")
-            val target = RefreshTarget(RefreshKind.AUCTION, url)
-            if (store.exists(target) && store.plan(target) == null) {
-                store.configure(target, 15)
-            }
-        }
         if (store.entries().any { store.exists(it.first) }) PendingAlertDelivery.enqueue(context)
         if (!store.prefs.getBoolean("legacyCancelled", false)) {
             manager.cancelUniqueWork("auction-periodic")

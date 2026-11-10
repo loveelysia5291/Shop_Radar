@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
@@ -74,7 +75,14 @@ internal fun AutomaticRefreshMenu(target: RefreshTarget, iconModifier: Modifier 
             extra { menu = false }
             DropdownMenuItem(text = { Text("自動刷新") }, leadingIcon = { Checkbox(plan != null, null) }, onClick = {
                 menu = false
-                if (plan == null) { interval = "30"; configure = true } else store.configure(target, null)
+                if (plan == null) {
+                    val defaultInterval = if (target.kind == RefreshKind.AUCTION) 15 else 30
+                    store.configure(target, defaultInterval)
+                    if (RefreshNotificationAccess.needsPermission(context)) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    else if (!RefreshNotificationAccess.enabled(context, RefreshNotificationAccess.channel(target))) permissionDenied = true
+                } else {
+                    store.configure(target, null)
+                }
             })
             if (plan != null) DropdownMenuItem(text = { Text("間隔：${plan.intervalMinutes} 分鐘") }, onClick = {
                 menu = false; interval = plan.intervalMinutes.toString(); configure = true
@@ -99,44 +107,32 @@ internal fun AutomaticRefreshMenu(target: RefreshTarget, iconModifier: Modifier 
             else if (!RefreshNotificationAccess.enabled(context, RefreshNotificationAccess.channel(target))) permissionDenied = true
         }
     }
-    val cardBounds = LocalCardMenuBounds.current?.value
     fun dismissPanel() { menu = false; configure = false; backgroundSettings = false }
     BackHandler(enabled = backActive && (menu || configure || backgroundSettings)) { dismissPanel() }
-    if (cardBounds != null) {
-        Box(if (inCard) Modifier.fillMaxWidth() else Modifier) {
-            header(menuButton)
-            CardMenuPopup(cardBounds, inCard, expanded = backActive && (menu || configure || backgroundSettings),
-                onDismiss = { dismissPanel() }, preferredHeight = if (target.kind == RefreshKind.SHOP) 420.dp else 300.dp) {
-                Crossfade(targetState = when { backgroundSettings -> 2; configure -> 1; else -> 0 },
-                    animationSpec = tween(200), label = "refreshSettingsPage", modifier = Modifier.fillMaxSize()) { page ->
-                    Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-                        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            when (page) {
-                                2 -> { Text("背景通知設定", style = MaterialTheme.typography.titleSmall); BackgroundDeliverySettingsContent() }
-                                1 -> { Text("自動刷新", style = MaterialTheme.typography.titleSmall); fields() }
-                                else -> menuItems()
-                            }
-                        }
-                        if (page == 1) PairedActions("取消", { configure = false; menu = true }, "儲存", save, valid)
-                        if (page == 2) PairedActions("返回", { backgroundSettings = false; menu = true }, "關閉", { dismissPanel() })
-                    }
+
+    Box(if (inCard) Modifier.fillMaxWidth() else Modifier) {
+        header {
+            Box {
+                menuButton()
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, shape = RoundedCornerShape(14.dp)) {
+                    menuItems()
                 }
             }
         }
-    } else Box {
-        header(menuButton)
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) { menuItems() }
     }
-    if (configure && cardBounds == null) {
-        AlertDialog(onDismissRequest = { configure = false }, title = { Text("自動刷新") }, text = {
+    if (configure) {
+        AlertDialog(onDismissRequest = { configure = false }, title = { Text("自動刷新設定") }, text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 fields()
             }
-        }, confirmButton = { PairedActions("取消", { configure = false }, "儲存", save, valid) })
+        }, confirmButton = {
+            TextButton(onClick = save, enabled = valid) { Text("儲存") }
+        }, dismissButton = {
+            TextButton(onClick = { configure = false }) { Text("取消") }
+        })
     }
     if (diagnostic) BackgroundRefreshDialog(target) { diagnostic = false }
-    if (backgroundSettings && cardBounds == null) BackgroundDeliverySettingsDialog { backgroundSettings = false }
+    if (backgroundSettings) BackgroundDeliverySettingsDialog { backgroundSettings = false }
     if (permissionDenied) RefreshNotificationPermissionDialog { permissionDenied = false }
 }
 

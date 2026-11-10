@@ -62,7 +62,7 @@ class AuctionStore(private val context: Context) {
             save(items.filter { it.optString("url") != url })
             cancelOutbidNotification(context, url)
         }
-        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.AUCTION, url), null)
+        AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.AUCTION, url))
     }
     fun update(url: String, action: (JSONObject) -> Unit) = synchronized(lock) {
         val items = list()

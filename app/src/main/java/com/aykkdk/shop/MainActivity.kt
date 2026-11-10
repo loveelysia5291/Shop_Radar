@@ -2420,7 +2420,7 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                 ImageCachePolicy.removeShop(context, shopUrl)
                 NotificationManagerCompat.from(context).cancel("subscription-updates", RefreshTarget(RefreshKind.SHOP, shopUrl).key.hashCode())
                 synchronized(SubscriptionMutations.lock) { prefs.edit().remove(shopUrl).commit() }
-                AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, shopUrl), null)
+                AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.SHOP, shopUrl))
                 localVersion++; pendingShopRemoval = null
             }) { Text("確定取消") } },
             dismissButton = { TextButton(onClick = { pendingShopRemoval = null }) { Text("保留訂閱") } })

@@ -71,7 +71,7 @@ class ProductSubscriptionStore(private val context: Context) {
         ImageCachePolicy.removeProducts(context, listOf(url), listOf(image))
         NotificationManagerCompat.from(context).cancel("subscription-updates", RefreshTarget(RefreshKind.PRODUCT, url).key.hashCode())
         synchronized(SubscriptionMutations.lock) { prefs.edit().remove(url).commit() }
-        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), null)
+        AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.PRODUCT, url))
     }
     fun list(): List<JSONObject> = prefs.all.values.mapNotNull {
         runCatching { JSONObject(it as String).also { item ->
@@ -159,7 +159,7 @@ class ProductSubscriptionStore(private val context: Context) {
                 }
             }.getOrDefault(false)
             if (converted) {
-                schedules.configure(RefreshTarget(RefreshKind.PRODUCT, url), null)
+                schedules.remove(RefreshTarget(RefreshKind.PRODUCT, url))
                 val auctionTarget = RefreshTarget(RefreshKind.AUCTION, canonical)
                 if (oldPlan != null && schedules.exists(auctionTarget) && schedules.plan(auctionTarget) == null)
                     schedules.configure(auctionTarget, oldPlan.intervalMinutes)
