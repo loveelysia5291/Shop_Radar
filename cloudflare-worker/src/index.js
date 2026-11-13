@@ -132,7 +132,7 @@ export default {
         await kvPut(env, "system:admin_auth", JSON.stringify(updatedAuth));
 
         // 註銷臨時權杖並簽發正式 Token
-        if (tempToken) await kvPut(env, `admin_temp:${tempToken}`, "used", 10);
+        if (tempToken) await kvDelete(env, `admin_temp:${tempToken}`);
         const finalToken = "adm_" + crypto.randomUUID();
         await kvPut(env, `admin_token:${finalToken}`, "active", 86400);
 
@@ -770,7 +770,7 @@ async function checkAdminRateLimit(env, clientIp) {
 }
 
 async function clearAdminRateLimit(env, clientIp) {
-  await kvPut(env, `ratelimit:admin:${clientIp}`, JSON.stringify({ count: 0, startTime: 0 }), 10);
+  await kvDelete(env, `ratelimit:admin:${clientIp}`);
 }
 
 async function recordAndCheckRateLimit(env, key) {
@@ -792,7 +792,7 @@ async function recordAndCheckRateLimit(env, key) {
 }
 
 async function clearRateLimit(env, key) {
-  await kvPut(env, `ratelimit:${key}`, JSON.stringify({ count: 0, startTime: 0 }), 10);
+  await kvDelete(env, `ratelimit:${key}`);
 }
 
 function isValidUrl(urlString) {
@@ -833,7 +833,10 @@ async function kvGet(env, key) {
 }
 async function kvPut(env, key, value, ttl = null) {
   if (env.RADAR_KV) {
-    if (ttl) return await env.RADAR_KV.put(key, value, { expirationTtl: ttl });
+    if (ttl) {
+      const safeTtl = Math.max(Number(ttl) || 60, 60); // Cloudflare KV 要求 expirationTtl 最低需至少 60 秒
+      return await env.RADAR_KV.put(key, value, { expirationTtl: safeTtl });
+    }
     return await env.RADAR_KV.put(key, value);
   }
   memoryStore.set(key, value);
