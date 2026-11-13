@@ -1,15 +1,11 @@
 package com.aykkdk.shop
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.Base64
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -223,8 +219,9 @@ data class CaptchaSession(
     val viewstate: String = "",
     val viewstateGenerator: String = "",
     val famiCode: String = "",
+    val hilifeToken: String = "",
     val imageBase64: String = "",
-    val suggestedCode: String = ""
+    val svgData: String = ""
 )
 
 data class LogisticsQueryResult(
@@ -245,7 +242,7 @@ object LogisticsClient {
             LogisticsCarrier.SEVEN_ELEVEN -> fetch711Captcha()
             LogisticsCarrier.FAMILY_MART -> fetchFamiCaptcha()
             LogisticsCarrier.HI_LIFE -> fetchHilifeCaptcha()
-            else -> CaptchaSession(carrier, "", "", "", "", "", "")
+            else -> CaptchaSession(carrier, "", "", "", "", "", "", "")
         }
     }
 
@@ -264,12 +261,11 @@ object LogisticsClient {
 
         val vs = Regex("id=\"__VIEWSTATE\"\\s+value=\"([^\"]+)\"").find(html)?.groupValues?.get(1).orEmpty()
         val vsg = Regex("id=\"__VIEWSTATEGENERATOR\"\\s+value=\"([^\"]+)\"").find(html)?.groupValues?.get(1).orEmpty()
-        val ts = Regex("src=\"ValidateImage\\.aspx\\?ts=([^\"]+)\"").find(html)?.groupValues?.get(1).orEmpty()
+        val ts = Regex("src=\"(?:ValidateImage|checkcode)\\.aspx\\?([^\"']+)\"").find(html)?.groupValues?.get(1).orEmpty()
 
         var imgBase64 = ""
-        var suggested = ""
         if (ts.isNotBlank()) {
-            val imgUrl = URL("https://eservice.7-11.com.tw/e-tracking/ValidateImage.aspx?ts=$ts")
+            val imgUrl = URL("https://eservice.7-11.com.tw/e-tracking/ValidateImage.aspx?$ts")
             val imgConn = imgUrl.openConnection() as HttpURLConnection
             imgConn.requestMethod = "GET"
             imgConn.setRequestProperty("User-Agent", USER_AGENT)
@@ -279,8 +275,7 @@ object LogisticsClient {
             imgConn.readTimeout = 8000
             val bytes = imgConn.inputStream.use { it.readBytes() }
             imgConn.disconnect()
-            imgBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            suggested = SimpleCaptchaRecognizer.recognize(bytes)
+            imgBase64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
         }
 
         return CaptchaSession(
@@ -288,8 +283,7 @@ object LogisticsClient {
             cookieHeader = cookies,
             viewstate = vs,
             viewstateGenerator = vsg,
-            imageBase64 = imgBase64,
-            suggestedCode = suggested
+            imageBase64 = imgBase64
         )
     }
 
@@ -314,7 +308,6 @@ object LogisticsClient {
         val code = inner.optString("Code", "")
 
         var imgBase64 = ""
-        var suggested = ""
         if (code.isNotBlank()) {
             val encCode = URLEncoder.encode(code, "UTF-8")
             val imgUrl = URL("https://ecfme.fme.com.tw/FMEDCFPWebV2_II/CodeHandler.ashx?Code=$encCode")
@@ -327,26 +320,51 @@ object LogisticsClient {
             imgConn.readTimeout = 8000
             val bytes = imgConn.inputStream.use { it.readBytes() }
             imgConn.disconnect()
-            imgBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            suggested = SimpleCaptchaRecognizer.recognize(bytes)
+            imgBase64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
         }
 
         return CaptchaSession(
             carrier = LogisticsCarrier.FAMILY_MART,
             cookieHeader = cookies,
             famiCode = code,
-            imageBase64 = imgBase64,
-            suggestedCode = suggested
+            imageBase64 = imgBase64
         )
     }
 
     private fun fetchHilifeCaptcha(): CaptchaSession {
-        return CaptchaSession(
-            carrier = LogisticsCarrier.HI_LIFE,
-            cookieHeader = "",
-            imageBase64 = "",
-            suggestedCode = ""
-        )
+        return runCatching {
+            val url = URL("https://www.hilife.com.tw/webapi/api/Captcha/Generate")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.setRequestProperty("Referer", "https://www.hilife.com.tw/shipment-status")
+            conn.setRequestProperty("Accept", "application/json, text/plain, */*")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            val cookies = conn.headerFields["Set-Cookie"]?.joinToString("; ") { it.substringBefore(";") } ?: ""
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+
+            val json = JSONObject(body)
+            val data = json.optJSONObject("Data")
+            val svg = data?.optString("Svg").orEmpty()
+            val token = data?.optString("Token").orEmpty()
+
+            CaptchaSession(
+                carrier = LogisticsCarrier.HI_LIFE,
+                cookieHeader = cookies,
+                hilifeToken = token,
+                svgData = svg
+            )
+        }.getOrElse {
+            CaptchaSession(
+                carrier = LogisticsCarrier.HI_LIFE,
+                cookieHeader = "",
+                hilifeToken = "",
+                svgData = ""
+            )
+        }
     }
 
     suspend fun query(
@@ -369,7 +387,7 @@ object LogisticsClient {
             LogisticsCarrier.SPX -> querySpx(cleanNumber)
             LogisticsCarrier.SEVEN_ELEVEN -> query711(cleanNumber, captchaCode.trim(), session)
             LogisticsCarrier.FAMILY_MART -> queryFami(cleanNumber, captchaCode.trim(), session)
-            LogisticsCarrier.HI_LIFE -> queryHilife(cleanNumber, captchaCode.trim())
+            LogisticsCarrier.HI_LIFE -> queryHilife(cleanNumber, captchaCode.trim(), session)
             LogisticsCarrier.OK_MART -> LogisticsQueryResult(
                 success = true,
                 statusText = "OK 超商系統官方維護中，已保存此單號至您的包裹追蹤清單。",
@@ -445,14 +463,16 @@ object LogisticsClient {
         conn.connectTimeout = 12000
         conn.readTimeout = 12000
 
-        val postData = buildString {
-            append("__EVENTTARGET=&__EVENTARGUMENT=")
-            append("&__VIEWSTATE=").append(URLEncoder.encode(session.viewstate, "UTF-8"))
-            append("&__VIEWSTATEGENERATOR=").append(URLEncoder.encode(session.viewstateGenerator, "UTF-8"))
-            append("&txtProductNum=").append(URLEncoder.encode(trackingNumber, "UTF-8"))
-            append("&tbChkCode=").append(URLEncoder.encode(captchaCode, "UTF-8"))
-            append("&aaa=")
-        }
+        val encVs = URLEncoder.encode(session.viewstate, "UTF-8")
+        val encVsg = URLEncoder.encode(session.viewstateGenerator, "UTF-8")
+        val encNum = URLEncoder.encode(trackingNumber, "UTF-8")
+        val encCode = URLEncoder.encode(captchaCode, "UTF-8")
+
+        val postData = "__EVENTTARGET=&__EVENTARGUMENT=" +
+                "&__VIEWSTATE=$encVs&__VIEWSTATEGENERATOR=$encVsg" +
+                "&txtProductNum=$encNum&tb_OrderNo=$encNum" +
+                "&tbChkCode=$encCode&tb_CheckCode=$encCode" +
+                "&aaa=&btn_Submit=查詢"
 
         conn.outputStream.use { it.write(postData.toByteArray()) }
         val html = conn.inputStream.bufferedReader().use { it.readText() }
@@ -463,30 +483,43 @@ object LogisticsClient {
         }
 
         val cleanHtml = html.replace(Regex("<script[\\s\\S]*?</script>|<style[\\s\\S]*?</style>"), "")
-        val store = Regex("門市名稱[：:\\s]*([^<\\n\\r]+)").find(cleanHtml)?.groupValues?.get(1)?.trim()
-        val statusCandidates = listOf(
-            Regex("(?:貨態|包裹狀態|最新狀態)[：:\\s]*([^<\\n\\r]+)").find(cleanHtml)?.groupValues?.get(1)?.trim(),
-            Regex("class=\"[^\"]*(?:state|status|result)[^\"]*\"[^>]*>([^<]+)<").find(cleanHtml)?.groupValues?.get(1)?.trim(),
-            Regex("(包裹在物流中心處理中|包裹已配達取件門市|包裹運送中|買家已取件|商品已抵達取件門市)").find(cleanHtml)?.groupValues?.get(1)
-        ).filterNotNull().filter { it.isNotBlank() }
 
-        val statusText = statusCandidates.firstOrNull() ?: if (cleanHtml.contains("查無")) "查無此單號資料或尚未建檔" else "包裹已交寄處理中"
-        val stage = analyzeStage(statusText)
+        // 1. 抓取取貨門市 (7-11 取貨門市格式: 198129 崇倫門市 (門市地址))
+        val storeMatch = Regex("(?:取貨門市|門市名稱)[^<]*</div>\\s*<div[^>]*>([\\s\\S]*?)</div>", RegexOption.IGNORE_CASE)
+            .find(cleanHtml)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), "")?.trim()
+            ?: Regex("(?:取貨門市|門市名稱)[：:\\s]*([^<\\r\\n]+)").find(cleanHtml)?.groupValues?.get(1)?.trim()
 
+        // 2. 抓取取件期限
+        val expireMatch = Regex("(?:取件期限|領取期限)[^<]*</div>\\s*<div[^>]*>([\\s\\S]*?)</div>", RegexOption.IGNORE_CASE)
+            .find(cleanHtml)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), "")?.trim()
+            ?: Regex("(?:取件期限|領取期限)[：:\\s]*([\\d/\\-]+)").find(cleanHtml)?.groupValues?.get(1)?.trim()
+
+        // 3. 抓取貨態歷程清單 (表格: 時間 / 貨態 / 詳細說明)
         val history = mutableListOf<LogisticsHistoryItem>()
-        Regex("(\\d{4}/\\d{1,2}/\\d{1,2}\\s+\\d{1,2}:\\d{1,2})[\\s\\S]*?([^<\\r\\n]+)").findAll(cleanHtml).forEach { m ->
-            val time = m.groupValues[1]
-            val desc = m.groupValues[2].trim()
-            if (desc.length in 3..60 && !desc.contains("版權") && !desc.contains("7-ELEVEN")) {
-                history.add(LogisticsHistoryItem(time, desc))
+        val rowRegex = Regex("<tr[^>]*>\\s*<td[^>]*>([\\s\\S]*?)</td>\\s*<td[^>]*>([\\s\\S]*?)</td>\\s*<td[^>]*>([\\s\\S]*?)</td>\\s*</tr>", RegexOption.IGNORE_CASE)
+        rowRegex.findAll(cleanHtml).forEach { m ->
+            val time = m.groupValues[1].replace(Regex("<[^>]+>"), "").trim()
+            val status = m.groupValues[2].replace(Regex("<[^>]+>"), "").trim()
+            val detail = m.groupValues[3].replace(Regex("<[^>]+>"), "").trim()
+            if (time.isNotBlank() && (status.isNotBlank() || detail.isNotBlank()) && !time.contains("時間")) {
+                val fullDesc = if (status.isNotBlank() && detail.isNotBlank() && status != detail) "$status ($detail)" else status.ifBlank { detail }
+                history.add(LogisticsHistoryItem(time, fullDesc))
             }
         }
+
+        // 4. 最新狀態判定
+        val statusText = history.firstOrNull()?.description
+            ?: Regex("(?:貨態|包裹狀態|最新狀態)[：:\\s]*([^<\\r\\n]+)").find(cleanHtml)?.groupValues?.get(1)?.trim()
+            ?: if (cleanHtml.contains("查無")) "查無此單號資料或尚未建檔" else "包裹處理中"
+
+        val stage = analyzeStage(statusText, expireMatch)
 
         return LogisticsQueryResult(
             success = true,
             statusText = statusText,
             stage = stage,
-            storeName = store,
+            storeName = storeMatch,
+            expireDateText = expireMatch,
             history = history
         )
     }
@@ -551,100 +584,109 @@ object LogisticsClient {
         ).filterNotNull().filter { it.isNotBlank() }
 
         val statusText = statusCandidates.firstOrNull() ?: if (cleanHtml.contains("查無")) "查無此訂單包裹資料" else "包裹處理中"
+        val storeMatch = Regex("(?:取件門市|店舖名稱|取件店舖)[：:\\s]*([^<\\r\\n]+)").find(cleanHtml)?.groupValues?.get(1)?.trim()
         val stage = analyzeStage(statusText)
 
         return LogisticsQueryResult(
             success = true,
             statusText = statusText,
-            stage = stage
+            stage = stage,
+            storeName = storeMatch
         )
     }
 
-    private fun queryHilife(trackingNumber: String, captchaCode: String): LogisticsQueryResult {
-        return LogisticsQueryResult(
-            success = true,
-            statusText = "已登記萊爾富包裹 $trackingNumber，可點擊「開啟官方頁面」直接查閱完整明細。",
-            stage = LogisticsStage.TRANSIT
-        )
-    }
-
-    private fun analyzeStage(text: String): LogisticsStage {
-        val lower = text.lowercase()
-        return when {
-            lower.contains("已取") || lower.contains("取件完成") || lower.contains("領取完成") -> LogisticsStage.PICKED_UP
-            lower.contains("退回") || lower.contains("快到期") || lower.contains("逾期") || lower.contains("即將退") -> LogisticsStage.EXPIRING
-            lower.contains("到達") || lower.contains("配達") || lower.contains("可取件") || lower.contains("待取件") ||
-                lower.contains("送達門市") || lower.contains("貨到了") || lower.contains("已到店") -> LogisticsStage.ARRIVED
-            lower.contains("理貨") || lower.contains("運送") || lower.contains("配送") || lower.contains("出貨") ||
-                lower.contains("物流中心") || lower.contains("交寄") -> LogisticsStage.TRANSIT
-            else -> LogisticsStage.UNKNOWN
-        }
-    }
-}
-
-/** Lightweight offline numeric character recognizer for 4-digit captchas */
-object SimpleCaptchaRecognizer {
-    fun recognize(imageBytes: ByteArray): String {
+    private fun queryHilife(trackingNumber: String, captchaCode: String, session: CaptchaSession?): LogisticsQueryResult {
         return runCatching {
-            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return ""
-            val w = bitmap.width
-            val h = bitmap.height
-            if (w < 20 || h < 10) return ""
-
-            // Convert to binary black & white matrix
-            val gray = Array(h) { IntArray(w) }
-            var sum = 0L
-            for (y in 0 until h) {
-                for (x in 0 until w) {
-                    val p = bitmap.getPixel(x, y)
-                    val r = (p shr 16) and 0xFF
-                    val g = (p shr 8) and 0xFF
-                    val b = p and 0xFF
-                    val lum = (r * 299 + g * 587 + b * 114) / 1000
-                    gray[y][x] = lum
-                    sum += lum
-                }
+            val url = URL("https://www.hilife.com.tw/webapi/api/Shipment/GetShipmentStatus")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.setRequestProperty("Referer", "https://www.hilife.com.tw/shipment-status")
+            if (session != null && session.cookieHeader.isNotBlank()) {
+                conn.setRequestProperty("Cookie", session.cookieHeader)
             }
-            val avg = (sum / (w * h)).toInt()
-            val threshold = (avg * 0.85).toInt().coerceIn(60, 200)
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
 
-            // Segment into 4 horizontal slices
-            val sliceWidth = w / 4
-            val digits = StringBuilder()
-            for (i in 0 until 4) {
-                val startX = i * sliceWidth
-                val endX = ((i + 1) * sliceWidth).coerceAtMost(w)
-                var blackPixels = 0
-                var topWeight = 0
-                var bottomWeight = 0
-                val midY = h / 2
+            val postPayload = JSONObject().apply {
+                put("order_no", trackingNumber)
+                put("captcha", captchaCode)
+            }.toString()
 
-                for (y in 0 until h) {
-                    for (x in startX until endX) {
-                        if (gray[y][x] < threshold) {
-                            blackPixels++
-                            if (y < midY) topWeight++ else bottomWeight++
-                        }
+            conn.outputStream.use { it.write(postPayload.toByteArray()) }
+            val resp = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+
+            val json = JSONObject(resp)
+            if (json.optInt("Code", 0) != 200) {
+                val err = json.optString("Message", "查詢失敗，請檢查單號或驗證碼")
+                return LogisticsQueryResult(false, err, LogisticsStage.UNKNOWN, errorMessage = err)
+            }
+
+            val data = json.optJSONObject("Data")
+            val store = data?.optString("PickupStore").takeIf { !it.isNullOrBlank() }
+            val timelineArr = data?.optJSONArray("StatusTimeline")
+            val history = mutableListOf<LogisticsHistoryItem>()
+            var latestStatusName = "運送中"
+
+            if (timelineArr != null && timelineArr.length() > 0) {
+                for (i in 0 until timelineArr.length()) {
+                    val stepObj = timelineArr.getJSONObject(i)
+                    val sName = stepObj.optString("StatusName")
+                    val sTime = stepObj.optString("StatusTime")
+                    if (sName.isNotBlank()) {
+                        history.add(LogisticsHistoryItem(sTime, sName))
+                        latestStatusName = sName
                     }
                 }
-
-                // If slice is mostly empty, skip
-                if (blackPixels < 15) continue
-
-                // Distribute simple digit heuristics based on density and balance
-                val ratio = if (bottomWeight > 0) topWeight.toFloat() / bottomWeight else 1f
-                val digit = when {
-                    ratio > 1.4f -> 7
-                    ratio < 0.65f -> 6
-                    ratio in 0.95f..1.15f && blackPixels > (sliceWidth * h * 0.35f) -> 8
-                    ratio in 0.85f..1.15f -> 0
-                    blackPixels < sliceWidth * h * 0.2f -> 1
-                    topWeight > bottomWeight -> 9
-                    else -> 2
-                }
-                digits.append(digit)
             }
-            if (digits.length == 4) digits.toString() else ""
-        }.getOrDefault("")
+
+            val stage = analyzeStage(latestStatusName)
+
+            LogisticsQueryResult(
+                success = true,
+                statusText = latestStatusName,
+                stage = stage,
+                storeName = store,
+                history = history
+            )
+        }.getOrElse {
+            LogisticsQueryResult(
+                success = true,
+                statusText = "已登記萊爾富包裹 $trackingNumber，可點擊「開啟官方頁面」查看最新明細。",
+                stage = LogisticsStage.TRANSIT
+            )
+        }
+    }
+
+    private fun analyzeStage(text: String, expireDateText: String? = null): LogisticsStage {
+        val lower = text.lowercase()
+        if (lower.contains("已取") || lower.contains("取件完成") || lower.contains("領取完成")) {
+            return LogisticsStage.PICKED_UP
+        }
+        if (lower.contains("退回") || lower.contains("快到期") || lower.contains("逾期") || lower.contains("即將退")) {
+            return LogisticsStage.EXPIRING
+        }
+        if (expireDateText != null) {
+            runCatching {
+                val sdf = SimpleDateFormat("yyyy/MM/dd", Locale.TAIWAN)
+                val expire = sdf.parse(expireDateText.trim())
+                if (expire != null) {
+                    val diffDays = (expire.time - System.currentTimeMillis()) / (24 * 60 * 60 * 1000L)
+                    if (diffDays in 0..2) return LogisticsStage.EXPIRING
+                }
+            }
+        }
+        if (lower.contains("到達") || lower.contains("配達") || lower.contains("可取件") || lower.contains("待取件") ||
+            lower.contains("送達門市") || lower.contains("貨到了") || lower.contains("已到店") || lower.contains("送達")) {
+            return LogisticsStage.ARRIVED
+        }
+        if (lower.contains("理貨") || lower.contains("運送") || lower.contains("配送") || lower.contains("出貨") ||
+            lower.contains("物流中心") || lower.contains("交寄") || lower.contains("離開門市") || lower.contains("寄件成立")) {
+            return LogisticsStage.TRANSIT
+        }
+        return LogisticsStage.UNKNOWN
     }
 }

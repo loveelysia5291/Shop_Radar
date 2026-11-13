@@ -1,14 +1,13 @@
 package com.aykkdk.shop
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.webkit.WebView
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,7 +16,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -28,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -38,6 +37,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
@@ -52,9 +52,8 @@ fun LogisticsTrackingScreen(modifier: Modifier = Modifier) {
     val store = remember { LogisticsStore(context) }
     var records by remember { mutableStateOf(store.loadAll()) }
     var activeCarrierDialog by remember { mutableStateOf<LogisticsCarrier?>(null) }
+    var editingRecord by remember { mutableStateOf<LogisticsRecord?>(null) }
     var selectedFilter by remember { mutableStateOf("全部") } // "全部", "待取貨", "已取貨"
-    val scope = rememberCoroutineScope()
-    var refreshingId by remember { mutableStateOf<String?>(null) }
 
     val pendingCount = records.count { !it.isPickedUp }
     val arrivedCount = records.count { !it.isPickedUp && it.stage == LogisticsStage.ARRIVED }
@@ -127,7 +126,10 @@ fun LogisticsTrackingScreen(modifier: Modifier = Modifier) {
                                 CarrierQuickButton(
                                     carrier = carrier,
                                     modifier = Modifier.weight(1f),
-                                    onClick = { activeCarrierDialog = carrier }
+                                    onClick = {
+                                        editingRecord = null
+                                        activeCarrierDialog = carrier
+                                    }
                                 )
                             }
                         }
@@ -221,7 +223,6 @@ fun LogisticsTrackingScreen(modifier: Modifier = Modifier) {
                 items(filteredRecords, key = { it.id }) { record ->
                     LogisticsParcelCard(
                         record = record,
-                        isRefreshing = refreshingId == record.id,
                         onTogglePickedUp = {
                             val updated = store.markPickedUp(record.id, !record.isPickedUp)
                             if (updated != null) records = store.loadAll()
@@ -231,29 +232,9 @@ fun LogisticsTrackingScreen(modifier: Modifier = Modifier) {
                             records = store.loadAll()
                         },
                         onRefresh = {
-                            scope.launch {
-                                refreshingId = record.id
-                                val res = LogisticsClient.query(
-                                    carrier = record.carrier,
-                                    trackingNumber = record.trackingNumber
-                                )
-                                if (res.success) {
-                                    val updated = record.copy(
-                                        latestStatus = res.statusText,
-                                        stage = if (record.isPickedUp) LogisticsStage.PICKED_UP else res.stage,
-                                        storeName = res.storeName ?: record.storeName,
-                                        expireDateText = res.expireDateText ?: record.expireDateText,
-                                        historyDetails = if (res.history.isNotEmpty()) res.history else record.historyDetails,
-                                        updatedAtMillis = System.currentTimeMillis()
-                                    )
-                                    store.save(updated)
-                                    records = store.loadAll()
-                                    Toast.makeText(context, "貨況已更新", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, res.errorMessage ?: "更新失敗", Toast.LENGTH_SHORT).show()
-                                }
-                                refreshingId = null
-                            }
+                            // 點下刷新彈出驗證碼輸入窗口
+                            editingRecord = record
+                            activeCarrierDialog = record.carrier
                         }
                     )
                 }
@@ -264,11 +245,16 @@ fun LogisticsTrackingScreen(modifier: Modifier = Modifier) {
     activeCarrierDialog?.let { carrier ->
         LogisticsQueryDialog(
             carrier = carrier,
-            onDismiss = { activeCarrierDialog = null },
-            onSaveRecord = { newRecord ->
-                store.save(newRecord)
+            initialRecord = editingRecord,
+            onDismiss = {
+                activeCarrierDialog = null
+                editingRecord = null
+            },
+            onSaveRecord = { savedRecord ->
+                store.save(savedRecord)
                 records = store.loadAll()
                 activeCarrierDialog = null
+                editingRecord = null
             }
         )
     }
@@ -323,7 +309,6 @@ private fun CarrierQuickButton(
 @Composable
 private fun LogisticsParcelCard(
     record: LogisticsRecord,
-    isRefreshing: Boolean,
     onTogglePickedUp: () -> Unit,
     onDelete: () -> Unit,
     onRefresh: () -> Unit
@@ -488,7 +473,7 @@ private fun LogisticsParcelCard(
                                     h.time,
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.outline,
-                                    modifier = Modifier.width(105.dp)
+                                    modifier = Modifier.width(115.dp)
                                 )
                                 Text(
                                     h.description,
@@ -541,14 +526,9 @@ private fun LogisticsParcelCard(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     IconButton(
                         onClick = onRefresh,
-                        enabled = !isRefreshing,
                         modifier = Modifier.size(36.dp)
                     ) {
-                        if (isRefreshing) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Refresh, "刷新貨況", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                        Icon(Icons.Default.Refresh, "刷新貨況（彈出驗證碼）", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
 
                     IconButton(
@@ -574,6 +554,7 @@ private fun LogisticsParcelCard(
 @Composable
 fun LogisticsQueryDialog(
     carrier: LogisticsCarrier,
+    initialRecord: LogisticsRecord? = null,
     onDismiss: () -> Unit,
     onSaveRecord: (LogisticsRecord) -> Unit
 ) {
@@ -582,29 +563,22 @@ fun LogisticsQueryDialog(
     val focusManager = LocalFocusManager.current
     val clipboard = LocalClipboardManager.current
 
-    var note by remember { mutableStateOf("") }
-    var trackingNumber by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf(initialRecord?.note.orEmpty()) }
+    var trackingNumber by remember { mutableStateOf(initialRecord?.trackingNumber.orEmpty()) }
     var captchaCode by remember { mutableStateOf("") }
     var captchaSession by remember { mutableStateOf<CaptchaSession?>(null) }
     var loadingCaptcha by remember { mutableStateOf(false) }
     var querying by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var autoRecognized by remember { mutableStateOf(false) }
 
     fun refreshCaptcha() {
         if (!carrier.needsCaptcha) return
         scope.launch {
             loadingCaptcha = true
             errorMessage = null
-            autoRecognized = false
+            captchaCode = ""
             val session = LogisticsClient.fetchCaptcha(carrier)
             captchaSession = session
-            if (session.suggestedCode.isNotBlank()) {
-                captchaCode = session.suggestedCode
-                autoRecognized = true
-            } else {
-                captchaCode = ""
-            }
             loadingCaptcha = false
         }
     }
@@ -663,7 +637,7 @@ fun LogisticsQueryDialog(
                         }
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "貨況查詢",
+                            if (initialRecord != null) "更新貨況" else "貨況查詢",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -715,12 +689,12 @@ fun LogisticsQueryDialog(
                     }
                 }
 
-                // 最上方小格子：商品備註
+                // 最上方小格子：商品備註（無「例如」文字）
                 OutlinedTextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = { Text("商品備註（選填）") },
-                    placeholder = { Text("例如：iPhone 手機殼、黑色衣服") },
+                    label = { Text("商品備註") },
+                    placeholder = { Text("商品備註") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -755,79 +729,108 @@ fun LogisticsQueryDialog(
                     keyboardOptions = KeyboardOptions(imeAction = if (carrier.needsCaptcha) ImeAction.Next else ImeAction.Done)
                 )
 
-                // 第二個框框：驗證碼（若需要）
+                // 第二個區塊：放大兩倍的驗證碼圖片與輸入框（若需要）
                 if (carrier.needsCaptcha) {
                     Spacer(Modifier.height(14.dp))
-                    Text(
-                        "輸入驗證碼",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(6.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        OutlinedTextField(
-                            value = captchaCode,
-                            onValueChange = {
-                                captchaCode = it
-                                autoRecognized = false
-                            },
-                            placeholder = { Text("驗證碼") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Number,
-                                imeAction = ImeAction.Done
-                            )
+                        Text(
+                            "驗證碼圖片",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-
-                        // 驗證碼圖片區域
-                        Surface(
-                            modifier = Modifier
-                                .height(56.dp)
-                                .widthIn(min = 96.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp)),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        TextButton(
+                            onClick = { refreshCaptcha() },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                if (loadingCaptcha) {
+                            Icon(Icons.Default.Refresh, "刷新驗證碼", Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("換一張驗證碼", fontSize = 13.sp)
+                        }
+                    }
+
+                    Spacer(Modifier.height(6.dp))
+
+                    // 放大 2 倍的驗證碼展示卡片 (高度 88.dp)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(88.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp)),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            if (loadingCaptcha) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
                                     CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                                } else if (captchaBitmap != null) {
-                                    androidx.compose.foundation.Image(
-                                        bitmap = captchaBitmap,
-                                        contentDescription = "驗證碼圖片",
-                                        modifier = Modifier.fillMaxHeight().padding(4.dp),
-                                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
-                                    )
-                                } else {
-                                    Text("點擊刷新", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("取得驗證碼中...", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                                }
+                            } else if (captchaBitmap != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = captchaBitmap,
+                                    contentDescription = "驗證碼圖片",
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
+                                    contentScale = ContentScale.Fit
+                                )
+                            } else if (!captchaSession?.svgData.isNullOrBlank()) {
+                                val svgData = captchaSession!!.svgData
+                                AndroidView(
+                                    factory = { ctx ->
+                                        WebView(ctx).apply {
+                                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                            settings.useWideViewPort = true
+                                            settings.loadWithOverviewMode = true
+                                        }
+                                    },
+                                    update = { webView ->
+                                        val html = """
+                                            <html><head><style>
+                                                body { margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; background: transparent; height: 100%; overflow: hidden; }
+                                                svg, img { max-height: 100%; max-width: 100%; width: auto; height: auto; }
+                                            </style></head><body>
+                                            ${if (svgData.startsWith("data:")) "<img src=\"$svgData\" />" else svgData}
+                                            </body></html>
+                                        """.trimIndent()
+                                        webView.loadDataWithBaseURL("https://www.hilife.com.tw", html, "text/html", "UTF-8", null)
+                                    },
+                                    modifier = Modifier.fillMaxSize().padding(6.dp)
+                                )
+                            } else {
+                                TextButton(onClick = { refreshCaptcha() }) {
+                                    Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("點擊載入驗證碼", fontSize = 13.sp)
                                 }
                             }
                         }
-
-                        // 刷新按鈕
-                        IconButton(
-                            onClick = { refreshCaptcha() },
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Icon(Icons.Default.Refresh, "刷新驗證碼", tint = MaterialTheme.colorScheme.primary)
-                        }
                     }
 
-                    if (autoRecognized && captchaCode.isNotBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("已自動輔助辨識驗證碼（如有誤差可手動修改）", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
+                    Spacer(Modifier.height(10.dp))
+
+                    // 驗證碼輸入框
+                    OutlinedTextField(
+                        value = captchaCode,
+                        onValueChange = { captchaCode = it },
+                        label = { Text("輸入圖中驗證碼") },
+                        placeholder = { Text("請看上方圖片輸入") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = {
+                            Icon(Icons.Default.Pin, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Done
+                        )
+                    )
                 }
 
                 // 錯誤訊息提示
@@ -870,7 +873,16 @@ fun LogisticsQueryDialog(
                                 )
                                 querying = false
                                 if (result.success) {
-                                    val newRecord = LogisticsRecord(
+                                    val saved = initialRecord?.copy(
+                                        note = note.trim(),
+                                        trackingNumber = trackingNumber.trim(),
+                                        latestStatus = result.statusText,
+                                        stage = if (initialRecord.isPickedUp) LogisticsStage.PICKED_UP else result.stage,
+                                        storeName = result.storeName ?: initialRecord.storeName,
+                                        expireDateText = result.expireDateText ?: initialRecord.expireDateText,
+                                        historyDetails = if (result.history.isNotEmpty()) result.history else initialRecord.historyDetails,
+                                        updatedAtMillis = System.currentTimeMillis()
+                                    ) ?: LogisticsRecord(
                                         carrier = carrier,
                                         trackingNumber = trackingNumber.trim(),
                                         note = note.trim(),
@@ -880,8 +892,8 @@ fun LogisticsQueryDialog(
                                         expireDateText = result.expireDateText,
                                         historyDetails = result.history
                                     )
-                                    onSaveRecord(newRecord)
-                                    Toast.makeText(context, "已新增並查詢貨況", Toast.LENGTH_SHORT).show()
+                                    onSaveRecord(saved)
+                                    Toast.makeText(context, if (initialRecord != null) "貨況已刷新" else "已新增包裹", Toast.LENGTH_SHORT).show()
                                 } else {
                                     errorMessage = result.errorMessage ?: "查詢失敗，請檢查單號或驗證碼"
                                     if (carrier.needsCaptcha) refreshCaptcha()
@@ -900,7 +912,7 @@ fun LogisticsQueryDialog(
                             Spacer(Modifier.width(8.dp))
                             Text("查詢中...")
                         } else {
-                            Text("開始查詢")
+                            Text(if (initialRecord != null) "更新貨況" else "開始查詢")
                         }
                     }
                 }
