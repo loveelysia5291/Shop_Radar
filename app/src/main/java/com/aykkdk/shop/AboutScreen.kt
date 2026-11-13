@@ -60,6 +60,7 @@ fun AboutScreen(
 
     val accountStore = remember { AccountStore.get(context) }
     var username by remember { mutableStateOf(accountStore.getUsername()) }
+    var email by remember { mutableStateOf(accountStore.getEmail()) }
     var isLoggedIn by remember { mutableStateOf(accountStore.isLoggedIn()) }
     var role by remember { mutableStateOf(accountStore.getRole()) }
     var serverUrl by remember { mutableStateOf(accountStore.getServerUrl()) }
@@ -81,18 +82,22 @@ fun AboutScreen(
         }
     }
 
-    // 初始化自動取得 FCM Device Token 並自動連線
+    // 初始化自動取得 FCM Device Token，僅在已登入帳號時進行背景推播同步
     LaunchedEffect(Unit) {
         FcmTokenManager.fetchToken(context) { token ->
             if (!token.isNullOrBlank()) {
                 fcmToken = token
             }
-            scope.launch {
-                accountStore.ensureDeviceRegistered(context)
-                username = accountStore.getUsername()
-                isLoggedIn = accountStore.isLoggedIn()
-                role = accountStore.getRole()
+            if (accountStore.isLoggedIn()) {
+                scope.launch {
+                    accountStore.uploadFcmToken(token.orEmpty())
+                    accountStore.syncToCloud(context)
+                }
             }
+            username = accountStore.getUsername()
+            email = accountStore.getEmail()
+            isLoggedIn = accountStore.isLoggedIn()
+            role = accountStore.getRole()
         }
     }
 
@@ -115,12 +120,21 @@ fun AboutScreen(
                                     .size(56.dp)
                                     .clip(CircleShape)
                                     .background(
-                                        Brush.linearGradient(
-                                            listOf(
-                                                MaterialTheme.colorScheme.primary,
-                                                MaterialTheme.colorScheme.tertiary
+                                        if (isLoggedIn) {
+                                            Brush.linearGradient(
+                                                listOf(
+                                                    MaterialTheme.colorScheme.primary,
+                                                    MaterialTheme.colorScheme.tertiary
+                                                )
                                             )
-                                        )
+                                        } else {
+                                            Brush.linearGradient(
+                                                listOf(
+                                                    Color(0xFF64748B),
+                                                    Color(0xFF475569)
+                                                )
+                                            )
+                                        }
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -137,7 +151,7 @@ fun AboutScreen(
                             Column(Modifier.weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = if (username.isNotBlank()) username else "裝置已自動連線",
+                                        text = if (isLoggedIn) username else "訪客模式 (未登入)",
                                         style = MaterialTheme.typography.titleLarge,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
@@ -147,14 +161,26 @@ fun AboutScreen(
                                     Spacer(Modifier.width(8.dp))
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = if (role == "low") Color(0xFFFEF3C7) else Color(0xFFDCFCE7)
+                                        color = when {
+                                            !isLoggedIn -> Color(0xFFF1F5F9)
+                                            role == "low" -> Color(0xFFFEF3C7)
+                                            else -> Color(0xFFDCFCE7)
+                                        }
                                     ) {
                                         Text(
-                                            text = if (role == "low") "60分鐘 (低權限)" else "30分鐘 (標準)",
+                                            text = when {
+                                                !isLoggedIn -> "推播未啟用"
+                                                role == "low" -> "60分鐘 (低權限)"
+                                                else -> "30分鐘 (標準)"
+                                            },
                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = if (role == "low") Color(0xFFB45309) else Color(0xFF15803D)
+                                            color = when {
+                                                !isLoggedIn -> Color(0xFF64748B)
+                                                role == "low" -> Color(0xFFB45309)
+                                                else -> Color(0xFF15803D)
+                                            }
                                         )
                                     }
                                 }
@@ -162,10 +188,27 @@ fun AboutScreen(
                                 Spacer(Modifier.height(4.dp))
 
                                 Text(
-                                    text = if (isLoggedIn) "已綁定專屬帳號，24小時自動監控" else "已啟用開箱即用自動連線模式",
+                                    text = if (isLoggedIn) {
+                                        if (email.isNotBlank()) "信箱：$email (雲端推播運作中)" else "已綁定專屬帳號，24小時自動監控"
+                                    } else {
+                                        "雲端推播已暫停，請登入專屬帳號以啟動服務"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = if (isLoggedIn) MaterialTheme.colorScheme.onSurfaceVariant else Color(0xFFE11D48)
                                 )
+                            }
+                        }
+
+                        if (!isLoggedIn) {
+                            Spacer(Modifier.height(14.dp))
+                            Button(
+                                onClick = { showAuthDialog = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Security, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("立即註冊 / 登入帳號以啟動推播服務", fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -180,6 +223,11 @@ fun AboutScreen(
                         ) {
                             Button(
                                 onClick = {
+                                    if (!isLoggedIn) {
+                                        Toast.makeText(context, "請先登入帳號以啟用雲端推播與資料同步", Toast.LENGTH_SHORT).show()
+                                        showAuthDialog = true
+                                        return@Button
+                                    }
                                     scope.launch {
                                         syncing = true
                                         val res = accountStore.syncToCloud(context)
@@ -218,6 +266,11 @@ fun AboutScreen(
 
                             OutlinedButton(
                                 onClick = {
+                                    if (!isLoggedIn) {
+                                        Toast.makeText(context, "請先登入帳號以啟用雲端推播測試", Toast.LENGTH_SHORT).show()
+                                        showAuthDialog = true
+                                        return@OutlinedButton
+                                    }
                                     scope.launch {
                                         testingPush = true
                                         val res = accountStore.sendTestPush()
@@ -268,16 +321,19 @@ fun AboutScreen(
                                         accountStore.logout()
                                         isLoggedIn = false
                                         username = ""
+                                        email = ""
                                         role = "standard"
-                                        Toast.makeText(context, "已登出帳號", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "已登出帳號，雲端推播已暫停", Toast.LENGTH_SHORT).show()
                                     }
                                 ) {
                                     Text("登出帳號", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                                 }
                             } else {
                                 TextButton(onClick = { showAuthDialog = true }) {
-                                    Text("自訂帳號密碼登入", fontSize = 12.sp)
+                                    Text("登入專屬帳號", fontSize = 12.sp)
                                 }
+                            }
+                        }
                             }
                         }
                     }
@@ -484,13 +540,14 @@ fun AboutScreen(
         AuthDialog(
             currentServerUrl = serverUrl,
             onDismiss = { showAuthDialog = false },
-            onAuthSuccess = { newUsername, newUrl, newRole ->
+            onAuthSuccess = { newUsername, newEmail, newUrl, newRole ->
                 username = newUsername
+                email = newEmail
                 isLoggedIn = true
                 serverUrl = newUrl
                 role = newRole
                 showAuthDialog = false
-                Toast.makeText(context, "歡迎，$newUsername！已成功登入", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "歡迎，$newUsername！已成功登入並啟動雲端推播", Toast.LENGTH_SHORT).show()
                 scope.launch {
                     val syncRes = accountStore.syncToCloud(context)
                     syncRes.onSuccess { lastSyncTime = System.currentTimeMillis() }
@@ -523,20 +580,58 @@ fun AboutScreen(
 private fun AuthDialog(
     currentServerUrl: String,
     onDismiss: () -> Unit,
-    onAuthSuccess: (username: String, serverUrl: String, role: String) -> Unit
+    onAuthSuccess: (username: String, email: String, serverUrl: String, role: String) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val accountStore = remember { AccountStore.get(context) }
 
     var isRegisterMode by remember { mutableStateOf(false) }
+    var inputEmail by remember { mutableStateOf("") }
     var inputUsername by remember { mutableStateOf("") }
     var inputPassword by remember { mutableStateOf("") }
+    var inputCaptchaAnswer by remember { mutableStateOf("") }
+    var captchaId by remember { mutableStateOf("") }
+    var captchaQuestion by remember { mutableStateOf("") }
+    var captchaLoading by remember { mutableStateOf(false) }
+
     var inputServerUrl by remember { mutableStateOf(currentServerUrl) }
     var selectedRole by remember { mutableStateOf("standard") } // "standard" (30分) 或 "low" (60分)
     var passwordVisible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showForgotPasswordDialog by remember { mutableStateOf(false) }
+
+    fun loadCaptcha() {
+        scope.launch {
+            captchaLoading = true
+            accountStore.fetchCaptcha(inputServerUrl).onSuccess {
+                captchaId = it.captchaId
+                captchaQuestion = it.question
+            }.onFailure {
+                captchaQuestion = "取得驗證碼失敗，點此重新取得"
+            }
+            captchaLoading = false
+        }
+    }
+
+    LaunchedEffect(isRegisterMode) {
+        if (isRegisterMode && captchaId.isBlank()) {
+            loadCaptcha()
+        }
+    }
+
+    if (showForgotPasswordDialog) {
+        ForgotPasswordDialog(
+            currentServerUrl = inputServerUrl,
+            onDismiss = { showForgotPasswordDialog = false },
+            onSuccess = {
+                showForgotPasswordDialog = false
+                isRegisterMode = false
+                errorMessage = null
+            }
+        )
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -554,7 +649,7 @@ private fun AuthDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (isRegisterMode) "註冊 Cloudflare 帳號" else "登入 Cloudflare 帳號",
+                        if (isRegisterMode) "信箱註冊專屬帳號" else "登入專屬帳號",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -583,53 +678,73 @@ private fun AuthDialog(
                         Text("登入", fontWeight = if (!isRegisterMode) FontWeight.Bold else FontWeight.Normal)
                     }
                     TextButton(
-                        onClick = { isRegisterMode = true; errorMessage = null },
+                        onClick = {
+                            isRegisterMode = true
+                            errorMessage = null
+                            if (captchaId.isBlank()) loadCaptcha()
+                        },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.textButtonColors(
                             containerColor = if (isRegisterMode) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                         )
                     ) {
-                        Text("註冊新帳號", fontWeight = if (isRegisterMode) FontWeight.Bold else FontWeight.Normal)
+                        Text("信箱註冊", fontWeight = if (isRegisterMode) FontWeight.Bold else FontWeight.Normal)
                     }
                 }
 
                 Spacer(Modifier.height(16.dp))
 
-                // 帳號輸入框
-                OutlinedTextField(
-                    value = inputUsername,
-                    onValueChange = { inputUsername = it },
-                    label = { Text("使用者帳號") },
-                    placeholder = { Text("請輸入帳號 (至少3碼)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    leadingIcon = { Icon(Icons.Default.Person, null) }
-                )
-
-                Spacer(Modifier.height(12.dp))
-
-                // 密碼輸入框
-                OutlinedTextField(
-                    value = inputPassword,
-                    onValueChange = { inputPassword = it },
-                    label = { Text("密碼") },
-                    placeholder = { Text("請輸入密碼 (至少4碼)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                    leadingIcon = { Icon(Icons.Default.Lock, null) },
-                    trailingIcon = {
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                            Icon(if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
-                        }
-                    }
-                )
-
-                // 註冊時可選擇權限等級
                 if (isRegisterMode) {
-                    Spacer(Modifier.height(12.dp))
+                    // 電子信箱
+                    OutlinedTextField(
+                        value = inputEmail,
+                        onValueChange = { inputEmail = it },
+                        label = { Text("電子信箱 (Email)") },
+                        placeholder = { Text("example@gmail.com") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.Email, null) }
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    // 使用者名稱
+                    OutlinedTextField(
+                        value = inputUsername,
+                        onValueChange = { inputUsername = it },
+                        label = { Text("使用者名稱") },
+                        placeholder = { Text("3 ~ 30 字元") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.Person, null) }
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    // 密碼
+                    OutlinedTextField(
+                        value = inputPassword,
+                        onValueChange = { inputPassword = it },
+                        label = { Text("密碼") },
+                        placeholder = { Text("至少 6 碼安全密碼") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        leadingIcon = { Icon(Icons.Default.Lock, null) },
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
+                            }
+                        }
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    // 巡查權限選擇
                     Text("選擇巡查權限等級：", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(4.dp))
                     Row(
@@ -649,9 +764,91 @@ private fun AuthDialog(
                             modifier = Modifier.weight(1f)
                         )
                     }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    // 人機驗證卡片
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (captchaLoading) "載入驗證碼中..." else captchaQuestion.ifBlank { "點此載入題目" },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                            IconButton(onClick = { loadCaptcha() }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Refresh, "換一題", Modifier.size(18.dp))
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = inputCaptchaAnswer,
+                        onValueChange = { inputCaptchaAnswer = it },
+                        label = { Text("人機驗證答案") },
+                        placeholder = { Text("請輸入上述計算答案") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
+                    )
+                } else {
+                    // 登入模式
+                    OutlinedTextField(
+                        value = inputUsername,
+                        onValueChange = { inputUsername = it },
+                        label = { Text("帳號 或 電子信箱") },
+                        placeholder = { Text("請輸入使用者名稱或 Email") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.Person, null) }
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = inputPassword,
+                        onValueChange = { inputPassword = it },
+                        label = { Text("密碼") },
+                        placeholder = { Text("請輸入密碼") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        leadingIcon = { Icon(Icons.Default.Lock, null) },
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
+                            }
+                        }
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showForgotPasswordDialog = true }) {
+                            Text("忘記密碼？", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
 
                 // 伺服器網址
                 OutlinedTextField(
@@ -680,9 +877,24 @@ private fun AuthDialog(
                     Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = {
-                            if (inputUsername.isBlank() || inputPassword.isBlank()) {
-                                errorMessage = "請填寫完整帳號與密碼"
-                                return@Button
+                            if (isRegisterMode) {
+                                if (inputEmail.isBlank() || inputUsername.isBlank() || inputPassword.isBlank()) {
+                                    errorMessage = "請填寫完整信箱、帳號與密碼"
+                                    return@Button
+                                }
+                                if (inputCaptchaAnswer.isBlank()) {
+                                    errorMessage = "請完成人機驗證"
+                                    return@Button
+                                }
+                                if (inputPassword.length < 6) {
+                                    errorMessage = "密碼長度需至少 6 個字元"
+                                    return@Button
+                                }
+                            } else {
+                                if (inputUsername.isBlank() || inputPassword.isBlank()) {
+                                    errorMessage = "請填寫完整帳號 (或信箱) 與密碼"
+                                    return@Button
+                                }
                             }
                             if (inputServerUrl.isBlank()) {
                                 errorMessage = "請填寫 Cloudflare Worker 伺服器網址"
@@ -692,15 +904,29 @@ private fun AuthDialog(
                                 loading = true
                                 errorMessage = null
                                 val result = if (isRegisterMode) {
-                                    accountStore.register(inputUsername, inputPassword, inputServerUrl, selectedRole)
+                                    accountStore.register(
+                                        email = inputEmail,
+                                        username = inputUsername,
+                                        pass = inputPassword,
+                                        captchaId = captchaId,
+                                        captchaAnswer = inputCaptchaAnswer,
+                                        serverUrl = inputServerUrl,
+                                        role = selectedRole
+                                    )
                                 } else {
                                     accountStore.login(inputUsername, inputPassword, inputServerUrl)
                                 }
                                 loading = false
                                 result.onSuccess {
-                                    onAuthSuccess(inputUsername.trim(), inputServerUrl.trim(), accountStore.getRole())
+                                    onAuthSuccess(
+                                        accountStore.getUsername(),
+                                        accountStore.getEmail(),
+                                        inputServerUrl.trim(),
+                                        accountStore.getRole()
+                                    )
                                 }.onFailure {
                                     errorMessage = it.message ?: "操作失敗，請確認伺服器連線"
+                                    if (isRegisterMode) loadCaptcha()
                                 }
                             }
                         },
@@ -712,7 +938,291 @@ private fun AuthDialog(
                             Spacer(Modifier.width(6.dp))
                             Text("處理中...")
                         } else {
-                            Text(if (isRegisterMode) "立即註冊" else "立即登入")
+                            Text(if (isRegisterMode) "立即註冊並啟用推播" else "立即登入並啟用推播")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForgotPasswordDialog(
+    currentServerUrl: String,
+    onDismiss: () -> Unit,
+    onSuccess: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val accountStore = remember { AccountStore.get(context) }
+
+    var step by remember { mutableStateOf(1) } // 1: 申請驗證碼, 2: 輸入驗證碼與新密碼
+    var email by remember { mutableStateOf("") }
+    var captchaId by remember { mutableStateOf("") }
+    var captchaQuestion by remember { mutableStateOf("") }
+    var captchaAnswer by remember { mutableStateOf("") }
+    var captchaLoading by remember { mutableStateOf(false) }
+
+    var code by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var newPassVisible by remember { mutableStateOf(false) }
+
+    var devCodeHint by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    fun loadCaptcha() {
+        scope.launch {
+            captchaLoading = true
+            accountStore.fetchCaptcha(currentServerUrl).onSuccess {
+                captchaId = it.captchaId
+                captchaQuestion = it.question
+            }.onFailure {
+                captchaQuestion = "取得驗證碼失敗，點擊重新取得"
+            }
+            captchaLoading = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        loadCaptcha()
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(0.92f),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(Modifier.padding(24.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (step == 1) "忘記密碼 - 驗證信箱" else "重設全新密碼",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, null)
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                if (step == 1) {
+                    Text(
+                        "請輸入您註冊的電子信箱並完成人機驗證，系統將生成 6 位數重設驗證碼。",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(14.dp))
+
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = { email = it },
+                        label = { Text("註冊電子信箱 (Email)") },
+                        placeholder = { Text("example@gmail.com") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.Email, null) }
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (captchaLoading) "載入驗證碼中..." else captchaQuestion.ifBlank { "點此載入題目" },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                            IconButton(onClick = { loadCaptcha() }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Refresh, "換一題", Modifier.size(18.dp))
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = captchaAnswer,
+                        onValueChange = { captchaAnswer = it },
+                        label = { Text("人機驗證答案") },
+                        placeholder = { Text("請輸入計算結果數字") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
+                    )
+                } else {
+                    Text(
+                        "重設驗證碼已生成（10分鐘內有效），請輸入驗證碼並設定您的全新密碼。",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    devCodeHint?.let { codeHint ->
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                "【獨立伺服器提示】重設驗證碼為：$codeHint",
+                                modifier = Modifier.padding(10.dp),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it },
+                        label = { Text("6 位數重設驗證碼") },
+                        placeholder = { Text("請輸入 6 碼數字") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it },
+                        label = { Text("全新密碼") },
+                        placeholder = { Text("至少 6 碼新密碼") },
+                        singleLine = true,
+                        visualTransformation = if (newPassVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.Lock, null) },
+                        trailingIcon = {
+                            IconButton(onClick = { newPassVisible = !newPassVisible }) {
+                                Icon(if (newPassVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
+                            }
+                        }
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it },
+                        label = { Text("再次確認全新密碼") },
+                        placeholder = { Text("請再次輸入新密碼") },
+                        singleLine = true,
+                        visualTransformation = if (newPassVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        leadingIcon = { Icon(Icons.Default.Lock, null) }
+                    )
+                }
+
+                errorMessage?.let { err ->
+                    Spacer(Modifier.height(10.dp))
+                    Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (step == 1) {
+                                if (email.isBlank() || captchaAnswer.isBlank()) {
+                                    errorMessage = "請填寫信箱與人機驗證答案"
+                                    return@Button
+                                }
+                                scope.launch {
+                                    loading = true
+                                    errorMessage = null
+                                    accountStore.requestPasswordReset(email, captchaId, captchaAnswer, currentServerUrl)
+                                        .onSuccess {
+                                            loading = false
+                                            devCodeHint = it.devCode
+                                            if (!it.devCode.isNullOrBlank()) {
+                                                code = it.devCode
+                                            }
+                                            step = 2
+                                        }.onFailure {
+                                            loading = false
+                                            errorMessage = it.message ?: "申請失敗，請確認信箱是否已註冊"
+                                            loadCaptcha()
+                                        }
+                                }
+                            } else {
+                                if (code.isBlank() || newPassword.isBlank()) {
+                                    errorMessage = "請填寫驗證碼與新密碼"
+                                    return@Button
+                                }
+                                if (newPassword.length < 6) {
+                                    errorMessage = "新密碼長度需至少 6 個字元"
+                                    return@Button
+                                }
+                                if (newPassword != confirmPassword) {
+                                    errorMessage = "兩次輸入的新密碼不相符"
+                                    return@Button
+                                }
+                                scope.launch {
+                                    loading = true
+                                    errorMessage = null
+                                    accountStore.resetPassword(email, code, newPassword, currentServerUrl)
+                                        .onSuccess {
+                                            loading = false
+                                            Toast.makeText(context, "密碼已重設成功！請使用新密碼登入", Toast.LENGTH_LONG).show()
+                                            onSuccess()
+                                        }.onFailure {
+                                            loading = false
+                                            errorMessage = it.message ?: "重設失敗，請確認驗證碼是否正確"
+                                        }
+                                }
+                            }
+                        },
+                        enabled = !loading,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        if (loading) {
+                            CircularProgressIndicator(Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                            Text("處理中...")
+                        } else {
+                            Text(if (step == 1) "取得重設驗證碼" else "確認重設密碼")
                         }
                     }
                 }

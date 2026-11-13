@@ -323,10 +323,12 @@ class MainActivity : ComponentActivity() {
             if (!token.isNullOrBlank()) {
                 account.saveFcmToken(token)
             }
-            // 安裝即用：開箱自動裝置連線並同步至 Cloudflare Worker 伺服器
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                account.ensureDeviceRegistered(this@MainActivity)
-                account.syncToCloud(this@MainActivity)
+            // 核心規則：只有登入帳號才可以啟動雲端推播服務與同步
+            if (account.isLoggedIn()) {
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    account.uploadFcmToken(token.orEmpty())
+                    account.syncToCloud(this@MainActivity)
+                }
             }
         }
         // Register on the actual Activity dispatcher before composing any screen.

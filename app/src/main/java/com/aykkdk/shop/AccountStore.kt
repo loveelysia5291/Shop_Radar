@@ -21,6 +21,17 @@ data class SyncResult(
     val logisticsCount: Int = 0
 )
 
+data class CaptchaInfo(
+    val captchaId: String,
+    val question: String
+)
+
+data class ForgotPasswordResponse(
+    val success: Boolean,
+    val message: String,
+    val devCode: String? = null
+)
+
 class AccountStore private constructor(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("shop_radar_account_v1", Context.MODE_PRIVATE)
 
@@ -37,6 +48,7 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     fun getUsername(): String = prefs.getString("username", "").orEmpty()
+    fun getEmail(): String = prefs.getString("email", "").orEmpty()
     fun getToken(): String = prefs.getString("token", "").orEmpty()
     fun isLoggedIn(): Boolean = getUsername().isNotBlank() && getToken().isNotBlank()
     fun getRole(): String = prefs.getString("user_role", "standard").orEmpty()
@@ -72,6 +84,7 @@ class AccountStore private constructor(private val context: Context) {
     fun logout() {
         prefs.edit()
             .remove("username")
+            .remove("email")
             .remove("token")
             .remove("user_role")
             .remove("last_sync_time")
@@ -79,55 +92,44 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     /**
-     * 安裝即用：開箱自動裝置連線，無需手動填寫帳號密碼即可接收推播
+     * 取得人機驗證碼題目 (避免機器人濫發帳號)
      */
-    suspend fun ensureDeviceRegistered(appContext: Context): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun fetchCaptcha(serverUrl: String? = null): Result<CaptchaInfo> = withContext(Dispatchers.IO) {
         runCatching {
-            val endpoint = getServerUrl()
-            val deviceId = getDeviceId()
-            val fcm = getFcmToken()
-            val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
-
-            val url = URL("$endpoint/api/device/auto-register")
+            val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
+            val url = URL("$endpoint/api/auth/captcha")
             val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.requestMethod = "GET"
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
 
-            val payload = JSONObject().apply {
-                put("device_id", deviceId)
-                put("fcm_token", fcm)
-                put("device_name", deviceName)
-            }.toString()
-
-            conn.outputStream.use { it.write(payload.toByteArray()) }
             val status = conn.responseCode
             val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             conn.disconnect()
 
             val json = JSONObject(text.ifBlank { "{}" })
             if (json.optBoolean("success", false)) {
-                val token = json.optString("token")
-                val uname = json.optString("username")
-                val role = json.optString("role", "standard")
-
-                if (getToken().isBlank()) {
-                    prefs.edit()
-                        .putString("username", uname)
-                        .putString("token", token)
-                        .putString("user_role", role)
-                        .apply()
-                }
-                "裝置連線就緒 ($uname)"
+                CaptchaInfo(
+                    captchaId = json.optString("captchaId"),
+                    question = json.optString("question", "請完成人機驗證")
+                )
             } else {
-                throw Exception("自動連線失敗 ($status)")
+                throw Exception(json.optString("message", "取得人機驗證碼失敗 ($status)"))
             }
         }
     }
 
-    suspend fun login(username: String, pass: String, serverUrl: String? = null): Result<String> = withContext(Dispatchers.IO) {
+    /**
+     * 訪客模式相容方法 (僅在使用者已登入時進行同步)
+     */
+    suspend fun ensureDeviceRegistered(appContext: Context): Result<String> = withContext(Dispatchers.IO) {
+        if (!isLoggedIn()) {
+            return@withContext Result.failure(Exception("目前為訪客模式，請先登入帳號以啟用雲端推播"))
+        }
+        Result.success("已登入專屬帳號 (${getUsername()})")
+    }
+
+    suspend fun login(account: String, pass: String, serverUrl: String? = null): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
             val url = URL("$endpoint/api/auth/login")
@@ -140,7 +142,7 @@ class AccountStore private constructor(private val context: Context) {
 
             // 絕不於本地永久存儲密碼，純內存傳輸
             val payload = JSONObject().apply {
-                put("username", username.trim())
+                put("username", account.trim())
                 put("password", pass.trim())
             }.toString()
 
@@ -152,25 +154,35 @@ class AccountStore private constructor(private val context: Context) {
             val json = JSONObject(text.ifBlank { "{}" })
             if (json.optBoolean("success", false)) {
                 val token = json.optString("token")
-                val uname = json.optString("username", username)
+                val uname = json.optString("username", account)
+                val email = json.optString("email", "")
                 val role = json.optString("role", "standard")
                 serverUrl?.let { setServerUrl(it) }
                 prefs.edit()
                     .putString("username", uname)
+                    .putString("email", email)
                     .putString("token", token)
                     .putString("user_role", role)
                     .apply()
 
                 val fcm = getFcmToken()
                 if (fcm.isNotBlank()) uploadFcmToken(fcm)
-                "登入成功"
+                "登入成功，已啟動雲端推播服務"
             } else {
-                throw Exception(json.optString("message", "登入失敗，請確認帳號密碼"))
+                throw Exception(json.optString("message", "登入失敗，請確認帳號或密碼"))
             }
         }
     }
 
-    suspend fun register(username: String, pass: String, serverUrl: String? = null, role: String = "standard"): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun register(
+        email: String,
+        username: String,
+        pass: String,
+        captchaId: String,
+        captchaAnswer: String,
+        serverUrl: String? = null,
+        role: String = "standard"
+    ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
             val url = URL("$endpoint/api/auth/register")
@@ -182,8 +194,11 @@ class AccountStore private constructor(private val context: Context) {
             conn.readTimeout = 10000
 
             val payload = JSONObject().apply {
+                put("email", email.trim())
                 put("username", username.trim())
                 put("password", pass.trim())
+                put("captchaId", captchaId)
+                put("captchaAnswer", captchaAnswer.trim())
                 put("role", role)
             }.toString()
 
@@ -196,19 +211,103 @@ class AccountStore private constructor(private val context: Context) {
             if (json.optBoolean("success", false)) {
                 val token = json.optString("token")
                 val uname = json.optString("username", username)
+                val resEmail = json.optString("email", email)
                 val resRole = json.optString("role", role)
                 serverUrl?.let { setServerUrl(it) }
                 prefs.edit()
                     .putString("username", uname)
+                    .putString("email", resEmail)
                     .putString("token", token)
                     .putString("user_role", resRole)
                     .apply()
 
                 val fcm = getFcmToken()
                 if (fcm.isNotBlank()) uploadFcmToken(fcm)
-                "註冊成功並已登入"
+                "註冊成功並已啟動雲端推播"
             } else {
-                throw Exception(json.optString("message", "註冊失敗"))
+                throw Exception(json.optString("message", "註冊失敗 ($status)"))
+            }
+        }
+    }
+
+    /**
+     * 忘記密碼：申請 6 碼重設驗證碼
+     */
+    suspend fun requestPasswordReset(
+        email: String,
+        captchaId: String,
+        captchaAnswer: String,
+        serverUrl: String? = null
+    ): Result<ForgotPasswordResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
+            val url = URL("$endpoint/api/auth/forgot-password/request")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            val payload = JSONObject().apply {
+                put("email", email.trim())
+                put("captchaId", captchaId)
+                put("captchaAnswer", captchaAnswer.trim())
+            }.toString()
+
+            conn.outputStream.use { it.write(payload.toByteArray()) }
+            val status = conn.responseCode
+            val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+
+            val json = JSONObject(text.ifBlank { "{}" })
+            if (json.optBoolean("success", false)) {
+                ForgotPasswordResponse(
+                    success = true,
+                    message = json.optString("message", "驗證碼已生成"),
+                    devCode = json.optString("devCode").takeIf { it.isNotBlank() }
+                )
+            } else {
+                throw Exception(json.optString("message", "申請驗證碼失敗 ($status)"))
+            }
+        }
+    }
+
+    /**
+     * 忘記密碼：驗證 6 碼驗證碼並設定全新密碼
+     */
+    suspend fun resetPassword(
+        email: String,
+        code: String,
+        newPassword: String,
+        serverUrl: String? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
+            val url = URL("$endpoint/api/auth/forgot-password/reset")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            val payload = JSONObject().apply {
+                put("email", email.trim())
+                put("code", code.trim())
+                put("newPassword", newPassword.trim())
+            }.toString()
+
+            conn.outputStream.use { it.write(payload.toByteArray()) }
+            val status = conn.responseCode
+            val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+
+            val json = JSONObject(text.ifBlank { "{}" })
+            if (json.optBoolean("success", false)) {
+                json.optString("message", "密碼已重設成功！請使用新密碼登入")
+            } else {
+                throw Exception(json.optString("message", "密碼重設失敗 ($status)"))
             }
         }
     }
@@ -239,13 +338,10 @@ class AccountStore private constructor(private val context: Context) {
 
     suspend fun syncToCloud(appContext: Context): Result<SyncResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = getToken()
-            if (token.isBlank()) {
-                // 若無 token，先嘗試自動開箱連線
-                ensureDeviceRegistered(appContext)
+            if (!isLoggedIn()) {
+                throw Exception("目前為訪客模式，請先登入帳號以啟動雲端推播與資料同步")
             }
             val activeToken = getToken()
-            if (activeToken.isBlank()) throw Exception("請先連線至伺服器")
 
             // 1. 訂閱項目
             val subsArray = JSONArray()

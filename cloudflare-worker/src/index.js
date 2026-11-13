@@ -158,6 +158,7 @@ export default {
               const obj = JSON.parse(raw);
               devices.push({
                 username: obj.username,
+                email: obj.email || "-",
                 role: obj.role || "standard",
                 has_fcm: !!obj.fcmToken,
                 fcm_preview: obj.fcmToken ? `${obj.fcmToken.slice(0, 8)}...${obj.fcmToken.slice(-6)}` : "",
@@ -165,7 +166,8 @@ export default {
                 last_checked_at: obj.lastCheckedAt || 0,
                 subscriptions_count: (obj.subscriptions || []).length,
                 logistics_count: (obj.logistics || []).length,
-                created_at: obj.createdAt || 0
+                created_at: obj.createdAt || 0,
+                is_registered: !!obj.isRegisteredAccount
               });
             } catch (_) {}
           }
@@ -220,68 +222,111 @@ export default {
         return jsonResponse({ success: true, message: `已成功發送給 ${sentCount} 台裝置` });
       }
 
-      // 8. 安裝即用：手機自動連線註冊 API (Zero-Config Auto Register)
-      if (path === "/api/device/auto-register" && request.method === "POST") {
-        const body = await request.json().catch(() => ({}));
-        const { device_id, fcm_token, device_name } = body;
-        if (!device_id) return jsonResponse({ success: false, message: "device_id 不可為空" }, 400);
+      // 8. 人機驗證碼 (CAPTCHA) 生成 API (防止機器人濫發帳號)
+      if (path === "/api/auth/captcha" && request.method === "GET") {
+        const num1 = Math.floor(Math.random() * 80) + 12; // 12 ~ 91
+        const num2 = Math.floor(Math.random() * 50) + 5;  // 5 ~ 54
+        const ops = ["+", "-", "×"];
+        const op = ops[Math.floor(Math.random() * ops.length)];
+        let answer;
+        let expression;
 
-        const username = `dev_${device_id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 16)}`;
-        const existingRaw = await kvGet(env, `user:${username}`);
-        let userData;
-
-        if (existingRaw) {
-          userData = JSON.parse(existingRaw);
-          if (fcm_token) userData.fcmToken = fcm_token;
-          if (device_name) userData.deviceName = device_name;
+        if (op === "+") {
+          answer = num1 + num2;
+          expression = `${num1} + ${num2}`;
+        } else if (op === "-") {
+          const max = Math.max(num1, num2);
+          const min = Math.min(num1, num2);
+          answer = max - min;
+          expression = `${max} - ${min}`;
         } else {
-          const token = crypto.randomUUID();
-          userData = {
-            username,
-            role: "standard", // 開箱預設為 30 分鐘標準巡查
-            token,
-            isAnonymous: true,
-            fcmToken: fcm_token || "",
-            deviceName: device_name || "Android Device",
-            createdAt: Date.now(),
-            subscriptions: [],
-            auctions: [],
-            logistics: []
-          };
-          await kvPut(env, `token:${token}`, username);
-          await recordUserInList(env, username);
+          const small1 = Math.floor(Math.random() * 8) + 2; // 2 ~ 9
+          const small2 = Math.floor(Math.random() * 8) + 2; // 2 ~ 9
+          answer = small1 * small2;
+          expression = `${small1} × ${small2}`;
         }
 
-        await kvPut(env, `user:${username}`, JSON.stringify(userData));
+        const captchaId = crypto.randomUUID();
+        await kvPut(env, `captcha:${captchaId}`, JSON.stringify({
+          answer: String(answer),
+          createdAt: Date.now()
+        }), 300); // 5 分鐘有效
+
         return jsonResponse({
           success: true,
-          message: "裝置就緒，安裝即用啟用成功",
-          token: userData.token,
-          username: userData.username,
-          role: userData.role || "standard"
+          captchaId,
+          question: `請計算：${expression} = ?`,
+          expression
         });
       }
 
-      // 9. 使用者註冊
+      // 9. 使用者信箱註冊 (必須通過人機驗證與 PBKDF2 加鹽加密)
       if (path === "/api/auth/register" && request.method === "POST") {
-        const body = await request.json().catch(() => ({}));
-        const { username, password, role } = body;
-        if (!username || !password || username.length < 3 || password.length < 4) {
-          return jsonResponse({ success: false, message: "帳號需至少3碼，密碼需至少4碼" }, 400);
+        const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
+        if (!(await recordAndCheckRateLimit(env, `reg:${clientIp}`))) {
+          return jsonResponse({ success: false, message: "註冊頻率過高，已被安全限制 15 分鐘" }, 429);
         }
 
-        const cleanUname = username.trim();
-        const existing = await kvGet(env, `user:${cleanUname}`);
-        if (existing) return jsonResponse({ success: false, message: "此帳號已被註冊" }, 400);
+        const body = await request.json().catch(() => ({}));
+        const { email, username, password, captchaId, captchaAnswer, role } = body;
 
+        // 1. 人機驗證檢查
+        if (!captchaId || !captchaAnswer) {
+          return jsonResponse({ success: false, message: "請輸入人機驗證碼" }, 400);
+        }
+        const captchaRaw = await kvGet(env, `captcha:${captchaId}`);
+        if (!captchaRaw) {
+          return jsonResponse({ success: false, message: "人機驗證碼已過期或不存在，請點擊重新整理取得" }, 400);
+        }
+        await kvDelete(env, `captcha:${captchaId}`); // 一次性使用後立即銷毀
+        const captchaData = JSON.parse(captchaRaw);
+        if (String(captchaAnswer).trim() !== captchaData.answer) {
+          return jsonResponse({ success: false, message: "人機驗證計算錯誤，請重新整理驗證碼並輸入正確答案" }, 400);
+        }
+
+        // 2. 電子信箱驗證
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!email || !emailRegex.test(email.trim())) {
+          return jsonResponse({ success: false, message: "請輸入有效的電子信箱格式" }, 400);
+        }
+        const cleanEmail = email.trim().toLowerCase();
+
+        // 3. 使用者名稱驗證
+        const cleanUname = (username || "").trim();
+        if (cleanUname.length < 3 || cleanUname.length > 30) {
+          return jsonResponse({ success: false, message: "使用者名稱長度需介於 3 至 30 個字元" }, 400);
+        }
+        if (cleanUname.includes("@")) {
+          return jsonResponse({ success: false, message: "使用者名稱不可包含 @" }, 400);
+        }
+
+        // 4. 密碼強度驗證
+        if (!password || password.length < 6) {
+          return jsonResponse({ success: false, message: "密碼長度需至少 6 個字元" }, 400);
+        }
+
+        // 5. 唯一性檢查
+        const existingEmailUser = await kvGet(env, `email:${cleanEmail}`);
+        if (existingEmailUser) {
+          return jsonResponse({ success: false, message: "此電子信箱已被註冊，請直接登入或使用忘記密碼" }, 400);
+        }
+        const existingUser = await kvGet(env, `user:${cleanUname}`);
+        if (existingUser) {
+          return jsonResponse({ success: false, message: "此使用者名稱已被使用，請換一個名稱" }, 400);
+        }
+
+        // 6. PBKDF2 10萬次加鹽加密
         const { hash, salt } = await hashPassword(password);
         const token = crypto.randomUUID();
         const userData = {
           username: cleanUname,
+          email: cleanEmail,
           passwordHash: hash,
           passwordSalt: salt,
           role: role === "low" ? "low" : "standard",
           token,
+          isRegisteredAccount: true,
+          isAnonymous: false,
           createdAt: Date.now(),
           fcmToken: "",
           subscriptions: [],
@@ -290,23 +335,47 @@ export default {
         };
 
         await kvPut(env, `user:${cleanUname}`, JSON.stringify(userData));
+        await kvPut(env, `email:${cleanEmail}`, cleanUname);
         await kvPut(env, `token:${token}`, cleanUname);
         await recordUserInList(env, cleanUname);
 
-        return jsonResponse({ success: true, message: "註冊成功", token, username: cleanUname, role: userData.role });
+        return jsonResponse({
+          success: true,
+          message: "註冊成功！已自動登入並可啟用推播",
+          token,
+          username: cleanUname,
+          email: cleanEmail,
+          role: userData.role
+        });
       }
 
-      // 10. 使用者登入
+      // 10. 使用者登入 (支援使用者名稱或信箱登入)
       if (path === "/api/auth/login" && request.method === "POST") {
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         const body = await request.json().catch(() => ({}));
-        const { username, password } = body;
-        if (!username || !password) return jsonResponse({ success: false, message: "請輸入帳號與密碼" }, 400);
+        const accountInput = (body.username || body.account || "").trim();
+        const password = (body.password || "").trim();
 
-        const allowed = await recordAndCheckRateLimit(env, `user:${clientIp}:${username}`);
-        if (!allowed) return jsonResponse({ success: false, message: "登入失敗次數過多，已被安全鎖定 15 分鐘" }, 429);
+        if (!accountInput || !password) {
+          return jsonResponse({ success: false, message: "請輸入帳號 (或信箱) 與密碼" }, 400);
+        }
 
-        const rawUser = await kvGet(env, `user:${username.trim()}`);
+        const rateLimitKey = `user:${clientIp}:${accountInput}`;
+        const allowed = await recordAndCheckRateLimit(env, rateLimitKey);
+        if (!allowed) {
+          return jsonResponse({ success: false, message: "登入失敗次數過多，已被安全鎖定 15 分鐘" }, 429);
+        }
+
+        let lookupUsername = accountInput;
+        if (accountInput.includes("@")) {
+          const mappedUser = await kvGet(env, `email:${accountInput.toLowerCase()}`);
+          if (!mappedUser) {
+            return jsonResponse({ success: false, message: "帳號或密碼錯誤" }, 401);
+          }
+          lookupUsername = mappedUser;
+        }
+
+        const rawUser = await kvGet(env, `user:${lookupUsername}`);
         if (!rawUser) return jsonResponse({ success: false, message: "帳號或密碼錯誤" }, 401);
 
         const userData = JSON.parse(rawUser);
@@ -327,13 +396,118 @@ export default {
 
         if (!passwordMatches) return jsonResponse({ success: false, message: "帳號或密碼錯誤" }, 401);
 
-        await clearRateLimit(env, `user:${clientIp}:${username}`);
+        await clearRateLimit(env, rateLimitKey);
         const token = crypto.randomUUID();
         userData.token = token;
         await kvPut(env, `user:${userData.username}`, JSON.stringify(userData));
         await kvPut(env, `token:${token}`, userData.username);
 
-        return jsonResponse({ success: true, message: "登入成功", token, username: userData.username, role: userData.role || "standard" });
+        return jsonResponse({
+          success: true,
+          message: "登入成功",
+          token,
+          username: userData.username,
+          email: userData.email || "",
+          role: userData.role || "standard"
+        });
+      }
+
+      // 11. 忘記密碼：申請驗證碼 API (需過人機驗證)
+      if (path === "/api/auth/forgot-password/request" && request.method === "POST") {
+        const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
+        if (!(await recordAndCheckRateLimit(env, `forgot:${clientIp}`))) {
+          return jsonResponse({ success: false, message: "申請頻率過高，請 15 分鐘後再試" }, 429);
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const { email, captchaId, captchaAnswer } = body;
+
+        // 人機驗證
+        if (!captchaId || !captchaAnswer) {
+          return jsonResponse({ success: false, message: "請輸入人機驗證碼" }, 400);
+        }
+        const captchaRaw = await kvGet(env, `captcha:${captchaId}`);
+        if (!captchaRaw) {
+          return jsonResponse({ success: false, message: "人機驗證碼已過期，請重新整理" }, 400);
+        }
+        await kvDelete(env, `captcha:${captchaId}`);
+        const captchaData = JSON.parse(captchaRaw);
+        if (String(captchaAnswer).trim() !== captchaData.answer) {
+          return jsonResponse({ success: false, message: "人機驗證計算錯誤，請重新整理驗證碼" }, 400);
+        }
+
+        const cleanEmail = (email || "").trim().toLowerCase();
+        const matchedUsername = await kvGet(env, `email:${cleanEmail}`);
+        if (!matchedUsername) {
+          return jsonResponse({ success: false, message: "此電子信箱尚未註冊任何帳號" }, 404);
+        }
+
+        // 產生 6 位數高熵重設驗證碼
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+        await kvPut(env, `pwd_reset:${cleanEmail}`, JSON.stringify({
+          code: otpCode,
+          username: matchedUsername,
+          createdAt: Date.now()
+        }), 600); // 10 分鐘有效
+
+        return jsonResponse({
+          success: true,
+          message: "重設驗證碼已生成，有效時間為 10 分鐘",
+          email: cleanEmail,
+          devCode: otpCode // 支援獨立架設無外送郵件伺服器時直接於前端提示
+        });
+      }
+
+      // 12. 忘記密碼：驗證並重設密碼 API
+      if (path === "/api/auth/forgot-password/reset" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const { email, code, newPassword } = body;
+
+        const cleanEmail = (email || "").trim().toLowerCase();
+        const cleanCode = (code || "").trim();
+
+        if (!cleanEmail || !cleanCode || !newPassword) {
+          return jsonResponse({ success: false, message: "請輸入完整信箱、驗證碼與新密碼" }, 400);
+        }
+
+        if (newPassword.length < 6) {
+          return jsonResponse({ success: false, message: "新密碼長度需至少 6 個字元" }, 400);
+        }
+
+        const resetRaw = await kvGet(env, `pwd_reset:${cleanEmail}`);
+        if (!resetRaw) {
+          return jsonResponse({ success: false, message: "驗證碼已過期或不存在，請重新申請" }, 400);
+        }
+
+        const resetData = JSON.parse(resetRaw);
+        if (!timingSafeEqual(cleanCode, resetData.code)) {
+          return jsonResponse({ success: false, message: "驗證碼錯誤，請重新輸入" }, 400);
+        }
+
+        const userRaw = await kvGet(env, `user:${resetData.username}`);
+        if (!userRaw) {
+          return jsonResponse({ success: false, message: "找不到該帳號" }, 404);
+        }
+
+        const userData = JSON.parse(userRaw);
+        const { hash, salt } = await hashPassword(newPassword);
+        userData.passwordHash = hash;
+        userData.passwordSalt = salt;
+        await kvPut(env, `user:${userData.username}`, JSON.stringify(userData));
+        await kvDelete(env, `pwd_reset:${cleanEmail}`);
+
+        return jsonResponse({
+          success: true,
+          message: "密碼已安全重設成功！請使用新密碼登入"
+        });
+      }
+
+      // 13. 訪客/舊版自動註冊阻擋 (強制要求登入帳號方可啟動推播服務)
+      if (path === "/api/device/auto-register" && request.method === "POST") {
+        return jsonResponse({
+          success: false,
+          message: "為確保帳號安全與防濫用，僅限註冊並登入專屬帳號後方可啟用雲端推播與背景監控服務。請在 App 內註冊或登入。"
+        }, 403);
       }
 
       // 11. 身份認證保護
@@ -442,6 +616,8 @@ async function runScheduledMonitoring(env) {
       const userRaw = await kvGet(env, `user:${username}`);
       if (!userRaw) continue;
       const user = JSON.parse(userRaw);
+      // 核心規則：僅限已正式註冊並有密碼憑證之登入帳號啟動推播服務，訪客不進行巡查推播
+      if (!user.isRegisteredAccount && !user.passwordHash) continue;
       if (!user.fcmToken) continue;
 
       const role = user.role || "standard";
@@ -662,6 +838,10 @@ async function kvPut(env, key, value, ttl = null) {
   }
   memoryStore.set(key, value);
 }
+async function kvDelete(env, key) {
+  if (env.RADAR_KV) return await env.RADAR_KV.delete(key);
+  memoryStore.delete(key);
+}
 
 async function recordUserInList(env, username) {
   const raw = await kvGet(env, "system:all_users");
@@ -780,7 +960,7 @@ function handleAdminDashboardHtml(request, env) {
         </div>
         <table>
           <thead>
-            <tr><th>帳號 / 裝置 ID</th><th>目前巡查頻率</th><th>FCM 推播狀態</th><th>操作</th></tr>
+            <tr><th>帳號名稱</th><th>電子信箱</th><th>目前巡查頻率</th><th>FCM 推播狀態</th><th>操作</th></tr>
           </thead>
           <tbody id="deviceTableBody"></tbody>
         </table>
@@ -922,10 +1102,12 @@ function handleAdminDashboardHtml(request, env) {
         const isLow = d.role === "low";
         const tr = document.createElement("tr");
         const safeUsername = escapeHtml(d.username);
+        const safeEmail = escapeHtml(d.email || "-");
         tr.innerHTML = \`
           <td><strong>\${safeUsername}</strong></td>
+          <td style="color:#94a3b8; font-size:13px;">\${safeEmail}</td>
           <td><span class="badge \${isLow ? 'badge-60' : 'badge-30'}">\${isLow ? '60分鐘 (低權限)' : '30分鐘 (標準)'}</span></td>
-          <td>\${d.has_fcm ? '<span style="color:#34d399;">已連線</span>' : '<span style="color:#94a3b8;">未連線</span>'}</td>
+          <td>\${d.has_fcm ? '<span style="color:#34d399;">● 已連線</span>' : '<span style="color:#94a3b8;">○ 未連線</span>'}</td>
           <td>
             <button class="btn" style="background:#334155; color:#fff; padding:4px 10px; font-size:12px;" onclick="toggleRole('\${safeUsername}', '\${isLow ? 'standard' : 'low'}')">
               切換為 \${isLow ? '30分鐘' : '1小時'}
