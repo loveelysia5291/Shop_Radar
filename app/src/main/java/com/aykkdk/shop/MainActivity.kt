@@ -119,7 +119,7 @@ private fun AdaptiveCardGrid(
 @Composable
 private fun RadarNavigation(selected: Int, onSelect: (Int) -> Unit) {
     val buttons: @Composable () -> Unit = {
-        listOf("搜尋", "訂閱", "競拍").forEachIndexed { i, name ->
+        listOf("搜尋", "訂閱", "競拍", "工具").forEachIndexed { i, name ->
             val active = selected == i
             val scale by animateFloatAsState(if (active) 1.08f else 1f, tween(220), label = "tabScale")
             val background by animateColorAsState(if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent, tween(220), label = "tabBackground")
@@ -129,12 +129,12 @@ private fun RadarNavigation(selected: Int, onSelect: (Int) -> Unit) {
                 colors = IconButtonDefaults.filledIconToggleButtonColors(
                     containerColor = background, contentColor = foregroundColor,
                     checkedContainerColor = background, checkedContentColor = foregroundColor)) {
-                Icon(when (i) { 0 -> Icons.Default.Search; 1 -> Icons.Default.Store; else -> Icons.Default.Timer }, name)
+                Icon(when (i) { 0 -> Icons.Default.Search; 1 -> Icons.Default.Store; 2 -> Icons.Default.Timer; else -> Icons.Default.Build }, name)
             }
         }
     }
     LiquidGlassSurface(
-        Modifier.widthIn(max = 280.dp).fillMaxWidth(0.8f),
+        Modifier.widthIn(max = 340.dp).fillMaxWidth(0.92f),
         shape = RoundedCornerShape(30.dp)
     ) {
         Row(Modifier.padding(6.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly,
@@ -202,7 +202,7 @@ internal fun RadarLiquidTheme(dark: Boolean, content: @Composable () -> Unit) =
     MaterialTheme(colorScheme = if (dark) RadarDarkColors else RadarLightColors, content = content)
 
 @Composable
-private fun LiquidGlassSurface(
+internal fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
     shape: Shape = SquircleShape(26.dp),
     content: @Composable BoxScope.() -> Unit
@@ -380,7 +380,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     val uriHandler = LocalUriHandler.current
     // Search is deliberately the first rendered screen. The foreground auction
     // monitor is lifecycle-owned below; opening/switching tabs does not create extra polls.
-    val pager = rememberPagerState(initialPage = 0, pageCount = { 3 })
+    val pager = rememberPagerState(initialPage = 0, pageCount = { 4 })
     val pageFling = PagerDefaults.flingBehavior(pager)
     val navigationScope = rememberCoroutineScope()
     val tab = pager.currentPage
@@ -388,7 +388,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     LaunchedEffect(pager.isScrollInProgress) {
         if (!pager.isScrollInProgress && kotlin.math.abs(pager.currentPageOffsetFraction) > 0.001f) {
             val target = if (kotlin.math.abs(pager.currentPageOffsetFraction) >= 0.5f) {
-                if (pager.currentPageOffsetFraction > 0) (pager.currentPage + 1).coerceAtMost(2)
+                if (pager.currentPageOffsetFraction > 0) (pager.currentPage + 1).coerceAtMost(3)
                 else (pager.currentPage - 1).coerceAtLeast(0)
             } else {
                 pager.currentPage
@@ -1605,6 +1605,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     onAuctionAdded = { navigationScope.launch { pager.animateScrollToPage(2) } })
                 2 -> AuctionScreen(modifier, foreground && pager.settledPage == 2,
                     refreshing = auctionRefreshing, onWarning = { warning = it })
+                3 -> LogisticsTrackingScreen(modifier)
 
             }
             }
