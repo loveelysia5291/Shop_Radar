@@ -588,10 +588,6 @@ private fun AuthDialog(
     var inputEmail by remember { mutableStateOf("") }
     var inputUsername by remember { mutableStateOf("") }
     var inputPassword by remember { mutableStateOf("") }
-    var inputCaptchaAnswer by remember { mutableStateOf("") }
-    var captchaId by remember { mutableStateOf("") }
-    var captchaQuestion by remember { mutableStateOf("") }
-    var captchaLoading by remember { mutableStateOf(false) }
 
     var inputServerUrl by remember { mutableStateOf(currentServerUrl) }
     var selectedRole by remember { mutableStateOf("standard") } // "standard" (30分) 或 "low" (60分)
@@ -599,25 +595,6 @@ private fun AuthDialog(
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showForgotPasswordDialog by remember { mutableStateOf(false) }
-
-    fun loadCaptcha() {
-        scope.launch {
-            captchaLoading = true
-            accountStore.fetchCaptcha(inputServerUrl).onSuccess {
-                captchaId = it.captchaId
-                captchaQuestion = it.question
-            }.onFailure {
-                captchaQuestion = "取得驗證碼失敗，點此重新取得"
-            }
-            captchaLoading = false
-        }
-    }
-
-    LaunchedEffect(isRegisterMode) {
-        if (isRegisterMode && captchaId.isBlank()) {
-            loadCaptcha()
-        }
-    }
 
     if (showForgotPasswordDialog) {
         ForgotPasswordDialog(
@@ -679,7 +656,6 @@ private fun AuthDialog(
                         onClick = {
                             isRegisterMode = true
                             errorMessage = null
-                            if (captchaId.isBlank()) loadCaptcha()
                         },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.textButtonColors(
@@ -762,48 +738,6 @@ private fun AuthDialog(
                             modifier = Modifier.weight(1f)
                         )
                     }
-
-                    Spacer(Modifier.height(12.dp))
-
-                    // 人機驗證卡片
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    if (captchaLoading) "載入驗證碼中..." else captchaQuestion.ifBlank { "點此載入題目" },
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                            }
-                            IconButton(onClick = { loadCaptcha() }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.Refresh, "換一題", Modifier.size(18.dp))
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = inputCaptchaAnswer,
-                        onValueChange = { inputCaptchaAnswer = it },
-                        label = { Text("人機驗證答案") },
-                        placeholder = { Text("請輸入上述計算答案") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
-                    )
                 } else {
                     // 登入模式
                     OutlinedTextField(
@@ -880,10 +814,6 @@ private fun AuthDialog(
                                     errorMessage = "請填寫完整信箱、帳號與密碼"
                                     return@Button
                                 }
-                                if (inputCaptchaAnswer.isBlank()) {
-                                    errorMessage = "請完成人機驗證"
-                                    return@Button
-                                }
                                 if (inputPassword.length < 6) {
                                     errorMessage = "密碼長度需至少 6 個字元"
                                     return@Button
@@ -906,8 +836,6 @@ private fun AuthDialog(
                                         email = inputEmail,
                                         username = inputUsername,
                                         pass = inputPassword,
-                                        captchaId = captchaId,
-                                        captchaAnswer = inputCaptchaAnswer,
                                         serverUrl = inputServerUrl,
                                         role = selectedRole
                                     )
@@ -924,7 +852,6 @@ private fun AuthDialog(
                                     )
                                 }.onFailure {
                                     errorMessage = it.message ?: "操作失敗，請確認伺服器連線"
-                                    if (isRegisterMode) loadCaptcha()
                                 }
                             }
                         },
@@ -957,10 +884,6 @@ private fun ForgotPasswordDialog(
 
     var step by remember { mutableStateOf(1) } // 1: 申請驗證碼, 2: 輸入驗證碼與新密碼
     var email by remember { mutableStateOf("") }
-    var captchaId by remember { mutableStateOf("") }
-    var captchaQuestion by remember { mutableStateOf("") }
-    var captchaAnswer by remember { mutableStateOf("") }
-    var captchaLoading by remember { mutableStateOf(false) }
 
     var code by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
@@ -970,23 +893,6 @@ private fun ForgotPasswordDialog(
     var devCodeHint by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-
-    fun loadCaptcha() {
-        scope.launch {
-            captchaLoading = true
-            accountStore.fetchCaptcha(currentServerUrl).onSuccess {
-                captchaId = it.captchaId
-                captchaQuestion = it.question
-            }.onFailure {
-                captchaQuestion = "取得驗證碼失敗，點擊重新取得"
-            }
-            captchaLoading = false
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        loadCaptcha()
-    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1017,7 +923,7 @@ private fun ForgotPasswordDialog(
 
                 if (step == 1) {
                     Text(
-                        "請輸入您註冊的電子信箱並完成人機驗證，系統將生成 6 位數重設驗證碼。",
+                        "請輸入您註冊的電子信箱，系統將生成 6 位數重設驗證碼。",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1033,47 +939,6 @@ private fun ForgotPasswordDialog(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
                         leadingIcon = { Icon(Icons.Default.Email, null) }
-                    )
-
-                    Spacer(Modifier.height(12.dp))
-
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    if (captchaLoading) "載入驗證碼中..." else captchaQuestion.ifBlank { "點此載入題目" },
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                            }
-                            IconButton(onClick = { loadCaptcha() }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.Refresh, "換一題", Modifier.size(18.dp))
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = captchaAnswer,
-                        onValueChange = { captchaAnswer = it },
-                        label = { Text("人機驗證答案") },
-                        placeholder = { Text("請輸入計算結果數字") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
                     )
                 } else {
                     Text(
@@ -1163,14 +1028,14 @@ private fun ForgotPasswordDialog(
                     Button(
                         onClick = {
                             if (step == 1) {
-                                if (email.isBlank() || captchaAnswer.isBlank()) {
-                                    errorMessage = "請填寫信箱與人機驗證答案"
+                                if (email.isBlank()) {
+                                    errorMessage = "請填寫註冊的電子信箱"
                                     return@Button
                                 }
                                 scope.launch {
                                     loading = true
                                     errorMessage = null
-                                    accountStore.requestPasswordReset(email, captchaId, captchaAnswer, currentServerUrl)
+                                    accountStore.requestPasswordReset(email, currentServerUrl)
                                         .onSuccess {
                                             loading = false
                                             devCodeHint = it.devCode
@@ -1181,7 +1046,6 @@ private fun ForgotPasswordDialog(
                                         }.onFailure {
                                             loading = false
                                             errorMessage = it.message ?: "申請失敗，請確認信箱是否已註冊"
-                                            loadCaptcha()
                                         }
                                 }
                             } else {

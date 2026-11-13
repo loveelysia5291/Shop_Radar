@@ -52,7 +52,7 @@ export default {
         return handleAdminDashboardHtml(request, env);
       }
 
-      // 3. 管理員登入 (預設帳號 ADMIN, 密碼 00000000)
+      // 3. 管理員登入 (支援首次初始化與自訂管理員登入，停用預設 ADMIN)
       if (path === "/api/admin/login" && request.method === "POST") {
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         if (!(await checkAdminRateLimit(env, clientIp))) {
@@ -60,73 +60,114 @@ export default {
         }
 
         const body = await request.json().catch(() => ({}));
-        const username = (body.username || "").trim().toUpperCase();
+        const inputUsername = (body.username || "").trim();
         const password = (body.password || "").trim();
 
-        if (username !== "ADMIN") {
+        if (!inputUsername || !password) {
+          return jsonResponse({ success: false, message: "請輸入管理員帳號與密碼" }, 400);
+        }
+
+        const adminAuth = await getOrInitAdminAuth(env);
+
+        // 若輸入預設 ADMIN 帳號
+        if (inputUsername.toUpperCase() === "ADMIN") {
+          // 若已初始化並停用 ADMIN
+          if (adminAuth.adminDisabled) {
+            return jsonResponse({
+              success: false,
+              message: "安全原則：預設 ADMIN 帳號已永久停用！請使用您設定的自訂管理員名稱登入。"
+            }, 403);
+          }
+
+          // 尚未初始化：驗證預設密碼 00000000
+          const { hash } = await hashPassword(password, adminAuth.salt);
+          if (!timingSafeEqual(hash, adminAuth.hash)) {
+            return jsonResponse({ success: false, message: "管理員密碼錯誤" }, 401);
+          }
+
+          await clearAdminRateLimit(env, clientIp);
+          const tempToken = "temp_" + crypto.randomUUID();
+          await kvPut(env, `admin_temp:${tempToken}`, "require_change", 600); // 10分鐘有效
+          return jsonResponse({
+            success: true,
+            mustChangePassword: true,
+            mustSetupNewAdmin: true,
+            tempToken,
+            message: "首次登入：請設定專屬管理員名稱與密碼，設定完成後將永久停用預設 ADMIN 帳號！"
+          });
+        }
+
+        // 以自訂管理員名稱登入
+        if (inputUsername.toLowerCase() !== adminAuth.username.toLowerCase()) {
           return jsonResponse({ success: false, message: "管理員帳號錯誤" }, 401);
         }
 
-        // 取得或初始化管理員密碼雜湊（預設 8 個 0，絕不明文儲存）
-        const adminAuth = await getOrInitAdminAuth(env);
         const { hash } = await hashPassword(password, adminAuth.salt);
-
         if (!timingSafeEqual(hash, adminAuth.hash)) {
           return jsonResponse({ success: false, message: "管理員密碼錯誤" }, 401);
         }
 
         await clearAdminRateLimit(env, clientIp);
-
-        // 若為預設密碼，發放僅限修改密碼的臨時權杖
-        if (adminAuth.mustChangePassword || password === "00000000") {
-          const tempToken = "temp_" + crypto.randomUUID();
-          await kvPut(env, `admin_temp:${tempToken}`, "require_change", 600); // 10分鐘內有效
-          return jsonResponse({
-            success: true,
-            mustChangePassword: true,
-            tempToken,
-            message: "檢測到目前為初始預設密碼，基於安全原則，請立即修改管理員密碼！"
-          });
-        }
-
         const adminToken = "adm_" + crypto.randomUUID();
         await kvPut(env, `admin_token:${adminToken}`, "active", 86400); // 24小時有效
-        return jsonResponse({ success: true, mustChangePassword: false, token: adminToken });
+        return jsonResponse({
+          success: true,
+          mustChangePassword: false,
+          token: adminToken,
+          username: adminAuth.username
+        });
       }
 
-      // 4. 強制修改管理員密碼 API (嚴格要求非明文，PBKDF2 加鹽加密儲存)
+      // 4. 設定 / 修改管理員帳號與密碼 (支援修改管理員名稱並停用預設 ADMIN)
       if (path === "/api/admin/change-password" && request.method === "POST") {
         const body = await request.json().catch(() => ({}));
-        const { tempToken, adminToken, newPassword } = body;
+        const { tempToken, adminToken, newUsername, newPassword } = body;
 
-        // 驗證臨時權杖或正式管理權杖
         let isAuthorized = false;
+        let isFirstSetup = false;
         if (tempToken) {
           const state = await kvGet(env, `admin_temp:${tempToken}`);
-          if (state === "require_change") isAuthorized = true;
+          if (state === "require_change") {
+            isAuthorized = true;
+            isFirstSetup = true;
+          }
         } else if (adminToken) {
           isAuthorized = await verifyAdminToken(adminToken, env);
         }
 
         if (!isAuthorized) {
-          return jsonResponse({ success: false, message: "修改密碼權限已過期，請重新登入" }, 401);
+          return jsonResponse({ success: false, message: "修改憑證權限已過期，請重新登入" }, 401);
+        }
+
+        const cleanUname = (newUsername || "").trim();
+        if (isFirstSetup || cleanUname.length > 0) {
+          if (cleanUname.toUpperCase() === "ADMIN") {
+            return jsonResponse({ success: false, message: "新管理員名稱不能繼續使用預設的 ADMIN！請輸入自訂名稱。" }, 400);
+          }
+          if (cleanUname.length < 3) {
+            return jsonResponse({ success: false, message: "管理員名稱長度需至少 3 碼！" }, 400);
+          }
         }
 
         if (!newPassword || newPassword.length < 6) {
-          return jsonResponse({ success: false, message: "新密碼長度需至少 6 位以上" }, 400);
+          return jsonResponse({ success: false, message: "新密碼長度需至少 6 位以上！" }, 400);
         }
 
         if (newPassword === "00000000") {
-          return jsonResponse({ success: false, message: "新密碼不能繼續使用預設的 8 個 0！" }, 400);
+          return jsonResponse({ success: false, message: "新密碼不能繼續使用預設的 00000000！" }, 400);
         }
+
+        const adminAuth = await getOrInitAdminAuth(env);
+        const finalUname = cleanUname || adminAuth.username;
 
         // 使用 PBKDF2 重新隨機加鹽雜湊
         const { hash, salt } = await hashPassword(newPassword);
         const updatedAuth = {
-          username: "ADMIN",
+          username: finalUname,
           hash,
           salt,
           mustChangePassword: false,
+          adminDisabled: true, // 核心安全設定：設定完成後永久停用預設 ADMIN 權限
           updatedAt: Date.now()
         };
         await kvPut(env, "system:admin_auth", JSON.stringify(updatedAuth));
@@ -138,8 +179,36 @@ export default {
 
         return jsonResponse({
           success: true,
-          message: "管理員密碼已安全更新！",
-          token: finalToken
+          message: `專屬管理員帳號 [${finalUname}] 設定成功！預設 ADMIN 帳號已永久停用。`,
+          token: finalToken,
+          username: finalUname
+        });
+      }
+
+      // 後台 API：設定 FCM Server Key (免終端設定，直接網頁管理)
+      if (path === "/api/admin/set-fcm-key" && request.method === "POST") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const body = await request.json().catch(() => ({}));
+        const key = (body.fcm_server_key || "").trim();
+        if (!key) {
+          return jsonResponse({ success: false, message: "請輸入有效的 FCM 伺服器金鑰" }, 400);
+        }
+        await kvPut(env, "config:fcm_server_key", key);
+        return jsonResponse({ success: true, message: "FCM 伺服器金鑰已成功儲存！已可正常發送推播。" });
+      }
+
+      // 後台 API：取得推播伺服器設定狀態
+      if (path === "/api/admin/get-config" && request.method === "GET") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const key = env.FCM_SERVER_KEY || await kvGet(env, "config:fcm_server_key");
+        return jsonResponse({
+          success: true,
+          has_fcm_key: !!key,
+          fcm_key_preview: key ? `${key.slice(0, 8)}...${key.slice(-6)}` : ""
         });
       }
 
@@ -260,7 +329,7 @@ export default {
         });
       }
 
-      // 9. 使用者信箱註冊 (必須通過人機驗證與 PBKDF2 加鹽加密)
+      // 9. 使用者信箱註冊 (PBKDF2 10萬次加鹽加密)
       if (path === "/api/auth/register" && request.method === "POST") {
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         if (!(await recordAndCheckRateLimit(env, `reg:${clientIp}`))) {
@@ -268,30 +337,16 @@ export default {
         }
 
         const body = await request.json().catch(() => ({}));
-        const { email, username, password, captchaId, captchaAnswer, role } = body;
+        const { email, username, password, role } = body;
 
-        // 1. 人機驗證檢查
-        if (!captchaId || !captchaAnswer) {
-          return jsonResponse({ success: false, message: "請輸入人機驗證碼" }, 400);
-        }
-        const captchaRaw = await kvGet(env, `captcha:${captchaId}`);
-        if (!captchaRaw) {
-          return jsonResponse({ success: false, message: "人機驗證碼已過期或不存在，請點擊重新整理取得" }, 400);
-        }
-        await kvDelete(env, `captcha:${captchaId}`); // 一次性使用後立即銷毀
-        const captchaData = JSON.parse(captchaRaw);
-        if (String(captchaAnswer).trim() !== captchaData.answer) {
-          return jsonResponse({ success: false, message: "人機驗證計算錯誤，請重新整理驗證碼並輸入正確答案" }, 400);
-        }
-
-        // 2. 電子信箱驗證
+        // 1. 電子信箱驗證
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!email || !emailRegex.test(email.trim())) {
           return jsonResponse({ success: false, message: "請輸入有效的電子信箱格式" }, 400);
         }
         const cleanEmail = email.trim().toLowerCase();
 
-        // 3. 使用者名稱驗證
+        // 2. 使用者名稱驗證
         const cleanUname = (username || "").trim();
         if (cleanUname.length < 3 || cleanUname.length > 30) {
           return jsonResponse({ success: false, message: "使用者名稱長度需介於 3 至 30 個字元" }, 400);
@@ -300,12 +355,12 @@ export default {
           return jsonResponse({ success: false, message: "使用者名稱不可包含 @" }, 400);
         }
 
-        // 4. 密碼強度驗證
+        // 3. 密碼強度驗證
         if (!password || password.length < 6) {
           return jsonResponse({ success: false, message: "密碼長度需至少 6 個字元" }, 400);
         }
 
-        // 5. 唯一性檢查
+        // 4. 唯一性檢查
         const existingEmailUser = await kvGet(env, `email:${cleanEmail}`);
         if (existingEmailUser) {
           return jsonResponse({ success: false, message: "此電子信箱已被註冊，請直接登入或使用忘記密碼" }, 400);
@@ -315,7 +370,7 @@ export default {
           return jsonResponse({ success: false, message: "此使用者名稱已被使用，請換一個名稱" }, 400);
         }
 
-        // 6. PBKDF2 10萬次加鹽加密
+        // 5. PBKDF2 10萬次加鹽加密
         const { hash, salt } = await hashPassword(password);
         const token = crypto.randomUUID();
         const userData = {
@@ -412,7 +467,7 @@ export default {
         });
       }
 
-      // 11. 忘記密碼：申請驗證碼 API (需過人機驗證)
+      // 11. 忘記密碼：申請驗證碼 API (免人機驗證)
       if (path === "/api/auth/forgot-password/request" && request.method === "POST") {
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         if (!(await recordAndCheckRateLimit(env, `forgot:${clientIp}`))) {
@@ -420,23 +475,13 @@ export default {
         }
 
         const body = await request.json().catch(() => ({}));
-        const { email, captchaId, captchaAnswer } = body;
-
-        // 人機驗證
-        if (!captchaId || !captchaAnswer) {
-          return jsonResponse({ success: false, message: "請輸入人機驗證碼" }, 400);
-        }
-        const captchaRaw = await kvGet(env, `captcha:${captchaId}`);
-        if (!captchaRaw) {
-          return jsonResponse({ success: false, message: "人機驗證碼已過期，請重新整理" }, 400);
-        }
-        await kvDelete(env, `captcha:${captchaId}`);
-        const captchaData = JSON.parse(captchaRaw);
-        if (String(captchaAnswer).trim() !== captchaData.answer) {
-          return jsonResponse({ success: false, message: "人機驗證計算錯誤，請重新整理驗證碼" }, 400);
-        }
+        const { email } = body;
 
         const cleanEmail = (email || "").trim().toLowerCase();
+        if (!cleanEmail) {
+          return jsonResponse({ success: false, message: "請輸入註冊的電子信箱" }, 400);
+        }
+
         const matchedUsername = await kvGet(env, `email:${cleanEmail}`);
         if (!matchedUsername) {
           return jsonResponse({ success: false, message: "此電子信箱尚未註冊任何帳號" }, 404);
@@ -703,7 +748,8 @@ async function checkLogistics(env, user) {
 }
 
 async function sendFcmNotification(env, fcmToken, notification, data = {}) {
-  if (env.FCM_SERVER_KEY) {
+  const fcmKey = (await kvGet(env, "config:fcm_server_key")) || env.FCM_SERVER_KEY;
+  if (fcmKey) {
     try {
       const payload = {
         to: fcmToken,
@@ -713,7 +759,7 @@ async function sendFcmNotification(env, fcmToken, notification, data = {}) {
       };
       const resp = await fetch("https://fcm.googleapis.com/fcm/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `key=${env.FCM_SERVER_KEY}` },
+        headers: { "Content-Type": "application/json", "Authorization": `key=${fcmKey}` },
         body: JSON.stringify(payload)
       });
       return { success: resp.ok, response: await resp.text() };
@@ -721,7 +767,7 @@ async function sendFcmNotification(env, fcmToken, notification, data = {}) {
       return { success: false, error: e.message };
     }
   }
-  return { success: false, error: "尚未設定 FCM_SERVER_KEY" };
+  return { success: false, error: "尚未設定 FCM_SERVER_KEY (請至管理員後台輸入金鑰)" };
 }
 
 // ====================== 安全強化函式 ======================
@@ -729,7 +775,13 @@ async function sendFcmNotification(env, fcmToken, notification, data = {}) {
 async function getOrInitAdminAuth(env) {
   const raw = await kvGet(env, "system:admin_auth");
   if (raw) {
-    try { return JSON.parse(raw); } catch (_) {}
+    try {
+      const data = JSON.parse(raw);
+      if (typeof data.adminDisabled === "undefined") {
+        data.adminDisabled = false;
+      }
+      return data;
+    } catch (_) {}
   }
   // 初始預設密碼 00000000，使用隨機 Salt 與 PBKDF2 加密儲存
   const { hash, salt } = await hashPassword("00000000");
@@ -738,6 +790,7 @@ async function getOrInitAdminAuth(env) {
     hash,
     salt,
     mustChangePassword: true,
+    adminDisabled: false,
     updatedAt: Date.now()
   };
   await kvPut(env, "system:admin_auth", JSON.stringify(initial));
@@ -923,19 +976,22 @@ function handleAdminDashboardHtml(request, env) {
     <!-- 登入卡片 -->
     <div id="loginSection" class="card" style="max-width: 420px; margin: 80px auto;">
       <h2 style="margin-bottom: 16px; text-align: center; color: var(--primary);">🛡️ 購物雷達管理員登入</h2>
-      <p style="color: #94a3b8; font-size: 12px; margin-bottom: 16px; text-align: center;">預設帳號 ADMIN，預設密碼 00000000</p>
-      <input type="text" id="adminUser" class="input" placeholder="管理員帳號" value="ADMIN" />
-      <input type="password" id="adminPass" class="input" placeholder="管理員密碼" value="00000000" />
+      <p style="color: #94a3b8; font-size: 12px; margin-bottom: 16px; text-align: center;">預設帳號 ADMIN (首次需初始化)，或輸入您設定的專屬管理員帳號</p>
+      <input type="text" id="adminUser" class="input" placeholder="管理員帳號 (預設 ADMIN)" value="ADMIN" />
+      <input type="password" id="adminPass" class="input" placeholder="管理員密碼 (預設 00000000)" value="00000000" />
       <button class="btn" style="width: 100%; padding: 12px;" onclick="doAdminLogin()">登入管理後台</button>
       <p id="loginErr" style="color: var(--err); font-size: 12px; margin-top: 10px; text-align: center; display: none;"></p>
     </div>
 
     <!-- 儀表板主要內容 -->
     <div id="dashboardSection" style="display: none;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <h1 style="color: var(--primary); font-size: 22px;">📡 購物雷達 - 雲端推播管理系統</h1>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
         <div>
-          <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal()">修改密碼</button>
+          <h1 style="color: var(--primary); font-size: 22px;">📡 購物雷達 - 雲端推播管理系統</h1>
+          <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">ADMIN</strong></p>
+        </div>
+        <div>
+          <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal(false)">修改帳號密碼</button>
           <button class="btn" style="background:#475569; color:#fff;" onclick="logoutAdmin()">登出</button>
         </div>
       </div>
@@ -945,6 +1001,22 @@ function handleAdminDashboardHtml(request, env) {
         <div class="stat-box"><div class="stat-val" id="activeFcm">0</div><div style="font-size:12px;color:#94a3b8;">有效 FCM 推播裝置</div></div>
         <div class="stat-box"><div class="stat-val" id="stdUsers">0</div><div style="font-size:12px;color:#94a3b8;">標準權限 (30分巡查)</div></div>
         <div class="stat-box"><div class="stat-val" id="lowUsers">0</div><div style="font-size:12px;color:#94a3b8;">低權限模式 (60分巡查)</div></div>
+      </div>
+
+      <!-- FCM 金鑰即時設定卡片 -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+          <h3 style="color: #38bdf8;">🔑 FCM 雲端推播金鑰設定 (免終端指令)</h3>
+          <span id="fcmKeyStatus" class="badge" style="background: #78350f; color: #fbbf24;">檢測中...</span>
+        </div>
+        <p style="font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 19px;">
+          請至 Firebase Console (專案設定 -&gt; 雲端傳訊 Cloud Messaging -&gt; 伺服器金鑰 Server Key) 複製並貼上於下方，儲存後立即生效，雲端巡查即可直接推播通知至每台 Android 手機！
+        </p>
+        <div style="display: flex; gap: 10px;">
+          <input type="password" id="fcmKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="貼上 Firebase 伺服器金鑰 (AAAA...)" />
+          <button class="btn" style="height: 42px; white-space: nowrap;" onclick="doSaveFcmKey()">儲存金鑰</button>
+        </div>
+        <p id="fcmKeyMsg" style="font-size: 12px; margin-top: 8px; display: none;"></p>
       </div>
 
       <div class="card">
@@ -971,23 +1043,30 @@ function handleAdminDashboardHtml(request, env) {
     </div>
   </div>
 
-  <!-- 強制修改密碼 Modal (遮罩全屏，不可略過) -->
+  <!-- 強制初始化 / 修改管理員帳密 Modal -->
   <div id="changePassModal" class="modal-overlay" style="display: none;">
-    <div class="card" style="width: 100%; max-width: 420px; background: #1e293b;">
-      <h3 style="color: #fbbf24; margin-bottom: 8px;">⚠️ 安全要求：必須修改管理員密碼</h3>
-      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px; line-height: 18px;">
-        目前密碼為預設值 (00000000)，為防止密碼外洩並修復預設憑證漏洞，系統要求您立即設定一組全新專屬密碼（至少 6 碼）。
+    <div class="card" style="width: 100%; max-width: 440px; background: #1e293b;">
+      <h3 id="modalTitle" style="color: #fbbf24; margin-bottom: 8px;">⚠️ 安全要求：建立專屬管理員帳號</h3>
+      <p id="modalDesc" style="font-size: 13px; color: #94a3b8; margin-bottom: 16px; line-height: 18px;">
+        目前檢測為初始預設密碼，為修復預設帳密漏洞，系統要求您立即設定專屬管理員名稱與密碼。設定完成後，預設 ADMIN 帳號將永久停用！
       </p>
-      <input type="password" id="newPass1" class="input" placeholder="請輸入全新密碼 (至少6碼)" />
+      <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">全新管理員名稱 (不可為 ADMIN)</label>
+      <input type="text" id="newAdminUser" class="input" placeholder="請輸入自訂管理員名稱 (至少 3 碼)" />
+      <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">全新密碼 (至少 6 碼，不可為 00000000)</label>
+      <input type="password" id="newPass1" class="input" placeholder="請輸入全新密碼" />
+      <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">再次確認密碼</label>
       <input type="password" id="newPass2" class="input" placeholder="再次確認全新密碼" />
-      <button class="btn" style="width: 100%; padding: 12px;" onclick="doSubmitNewPassword()">確認修改並進入後台</button>
+      <button class="btn" style="width: 100%; padding: 12px;" onclick="doSubmitNewPassword()">確認儲存並進入後台</button>
+      <button id="btnCancelModal" class="btn" style="width: 100%; padding: 10px; margin-top: 8px; background: #334155; color: #fff; display: none;" onclick="closeChangePassModal()">取消</button>
       <p id="changePassErr" style="color: var(--err); font-size: 12px; margin-top: 10px; text-align: center; display: none;"></p>
     </div>
   </div>
 
   <script>
     let adminToken = localStorage.getItem("radar_admin_token");
+    let adminName = localStorage.getItem("radar_admin_name") || "ADMIN";
     let currentTempToken = null;
+    let isMandatorySetup = false;
 
     if (adminToken) { showDashboard(); }
 
@@ -1004,12 +1083,14 @@ function handleAdminDashboardHtml(request, env) {
         });
         const data = await res.json();
         if (data.success) {
-          if (data.mustChangePassword) {
+          if (data.mustChangePassword || data.mustSetupNewAdmin) {
             currentTempToken = data.tempToken;
-            document.getElementById("changePassModal").style.display = "flex";
+            showChangePassModal(true);
           } else {
             adminToken = data.token;
+            adminName = data.username || u;
             localStorage.setItem("radar_admin_token", adminToken);
+            localStorage.setItem("radar_admin_name", adminName);
             showDashboard();
           }
         } else {
@@ -1022,11 +1103,59 @@ function handleAdminDashboardHtml(request, env) {
       }
     }
 
+    function showChangePassModal(firstTime) {
+      isMandatorySetup = !!firstTime;
+      document.getElementById("changePassErr").style.display = "none";
+      document.getElementById("newPass1").value = "";
+      document.getElementById("newPass2").value = "";
+
+      const titleEl = document.getElementById("modalTitle");
+      const descEl = document.getElementById("modalDesc");
+      const userEl = document.getElementById("newAdminUser");
+      const cancelBtn = document.getElementById("btnCancelModal");
+
+      if (isMandatorySetup) {
+        titleEl.innerText = "⚠️ 安全要求：建立專屬管理員帳號";
+        titleEl.style.color = "#fbbf24";
+        descEl.innerText = "目前為初始預設密碼，基於安全原則，請設定專屬管理員名稱與密碼。設定完成後，預設 ADMIN 帳號將永久停用！";
+        userEl.value = "";
+        cancelBtn.style.display = "none";
+      } else {
+        titleEl.innerText = "🛠️ 修改管理員帳號與密碼";
+        titleEl.style.color = "#38bdf8";
+        descEl.innerText = "您可以變更管理員登入名稱或密碼。修改完成後請使用新憑證登入。";
+        userEl.value = localStorage.getItem("radar_admin_name") || "";
+        cancelBtn.style.display = "block";
+      }
+
+      document.getElementById("changePassModal").style.display = "flex";
+    }
+
+    function closeChangePassModal() {
+      if (!isMandatorySetup) {
+        document.getElementById("changePassModal").style.display = "none";
+      }
+    }
+
     async function doSubmitNewPassword() {
+      const u = document.getElementById("newAdminUser").value.trim();
       const p1 = document.getElementById("newPass1").value.trim();
       const p2 = document.getElementById("newPass2").value.trim();
       const err = document.getElementById("changePassErr");
       err.style.display = "none";
+
+      if (isMandatorySetup || u.length > 0) {
+        if (u.toUpperCase() === "ADMIN") {
+          err.innerText = "管理員名稱不能為預設的 ADMIN！請輸入專屬名稱。";
+          err.style.display = "block";
+          return;
+        }
+        if (u.length < 3) {
+          err.innerText = "管理員名稱長度需至少 3 碼！";
+          err.style.display = "block";
+          return;
+        }
+      }
 
       if (p1.length < 6) {
         err.innerText = "新密碼長度需至少 6 碼！";
@@ -1045,16 +1174,24 @@ function handleAdminDashboardHtml(request, env) {
       }
 
       try {
+        const payload = {
+          tempToken: currentTempToken,
+          adminToken: adminToken,
+          newUsername: u,
+          newPassword: p1
+        };
         const res = await fetch("/api/admin/change-password", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tempToken: currentTempToken, adminToken: adminToken, newPassword: p1 })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (data.success) {
-          alert("管理員密碼修改成功！");
+          alert(data.message || "管理員帳號密碼設定成功！");
           document.getElementById("changePassModal").style.display = "none";
           adminToken = data.token;
+          adminName = data.username || u;
           localStorage.setItem("radar_admin_token", adminToken);
+          localStorage.setItem("radar_admin_name", adminName);
           currentTempToken = null;
           showDashboard();
         } else {
@@ -1067,15 +1204,9 @@ function handleAdminDashboardHtml(request, env) {
       }
     }
 
-    function showChangePassModal() {
-      document.getElementById("newPass1").value = "";
-      document.getElementById("newPass2").value = "";
-      document.getElementById("changePassErr").style.display = "none";
-      document.getElementById("changePassModal").style.display = "flex";
-    }
-
     function logoutAdmin() {
       localStorage.removeItem("radar_admin_token");
+      localStorage.removeItem("radar_admin_name");
       adminToken = null;
       currentTempToken = null;
       document.getElementById("dashboardSection").style.display = "none";
@@ -1085,7 +1216,63 @@ function handleAdminDashboardHtml(request, env) {
     function showDashboard() {
       document.getElementById("loginSection").style.display = "none";
       document.getElementById("dashboardSection").style.display = "block";
+      document.getElementById("currentAdminName").innerText = localStorage.getItem("radar_admin_name") || "ADMIN";
+      loadConfig();
       loadDevices();
+    }
+
+    async function loadConfig() {
+      try {
+        const res = await fetch("/api/admin/get-config", { headers: { "Authorization": "Bearer " + adminToken } });
+        if (res.status === 401) return logoutAdmin();
+        const data = await res.json();
+        const statusEl = document.getElementById("fcmKeyStatus");
+        const inputEl = document.getElementById("fcmKeyInput");
+
+        if (data.has_fcm_key) {
+          statusEl.innerText = "● 已設定 (" + (data.fcm_key_preview || "") + ")";
+          statusEl.className = "badge badge-30";
+          inputEl.placeholder = "已設定金鑰 (" + (data.fcm_key_preview || "") + ")，若要更新請輸入新金鑰";
+        } else {
+          statusEl.innerText = "○ 尚未設定 (無法發送推播)";
+          statusEl.className = "badge badge-60";
+          inputEl.placeholder = "貼上 Firebase 伺服器金鑰 (AAAA...)";
+        }
+      } catch (_) {}
+    }
+
+    async function doSaveFcmKey() {
+      const key = document.getElementById("fcmKeyInput").value.trim();
+      const msg = document.getElementById("fcmKeyMsg");
+      msg.style.display = "none";
+
+      if (!key) {
+        alert("請輸入有效的 FCM 伺服器金鑰");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/admin/set-fcm-key", {
+          method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          body: JSON.stringify({ fcm_server_key: key })
+        });
+        const data = await res.json();
+        if (data.success) {
+          msg.style.color = "#34d399";
+          msg.innerText = "✅ " + data.message;
+          msg.style.display = "block";
+          document.getElementById("fcmKeyInput").value = "";
+          loadConfig();
+        } else {
+          msg.style.color = "var(--err)";
+          msg.innerText = "❌ " + (data.message || "儲存失敗");
+          msg.style.display = "block";
+        }
+      } catch (e) {
+        msg.style.color = "var(--err)";
+        msg.innerText = "❌ 連線錯誤: " + e.message;
+        msg.style.display = "block";
+      }
     }
 
     async function loadDevices() {

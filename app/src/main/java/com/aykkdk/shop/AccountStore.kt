@@ -178,10 +178,10 @@ class AccountStore private constructor(private val context: Context) {
         email: String,
         username: String,
         pass: String,
-        captchaId: String,
-        captchaAnswer: String,
         serverUrl: String? = null,
-        role: String = "standard"
+        role: String = "standard",
+        captchaId: String = "",
+        captchaAnswer: String = ""
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
@@ -197,8 +197,8 @@ class AccountStore private constructor(private val context: Context) {
                 put("email", email.trim())
                 put("username", username.trim())
                 put("password", pass.trim())
-                put("captchaId", captchaId)
-                put("captchaAnswer", captchaAnswer.trim())
+                if (captchaId.isNotBlank()) put("captchaId", captchaId)
+                if (captchaAnswer.isNotBlank()) put("captchaAnswer", captchaAnswer.trim())
                 put("role", role)
             }.toString()
 
@@ -235,9 +235,9 @@ class AccountStore private constructor(private val context: Context) {
      */
     suspend fun requestPasswordReset(
         email: String,
-        captchaId: String,
-        captchaAnswer: String,
-        serverUrl: String? = null
+        serverUrl: String? = null,
+        captchaId: String = "",
+        captchaAnswer: String = ""
     ): Result<ForgotPasswordResponse> = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
@@ -251,8 +251,8 @@ class AccountStore private constructor(private val context: Context) {
 
             val payload = JSONObject().apply {
                 put("email", email.trim())
-                put("captchaId", captchaId)
-                put("captchaAnswer", captchaAnswer.trim())
+                if (captchaId.isNotBlank()) put("captchaId", captchaId)
+                if (captchaAnswer.isNotBlank()) put("captchaAnswer", captchaAnswer.trim())
             }.toString()
 
             conn.outputStream.use { it.write(payload.toByteArray()) }
