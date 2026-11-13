@@ -2,16 +2,20 @@ package com.aykkdk.shop
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 data class SyncResult(
     val success: Boolean,
     val message: String,
+    val role: String = "standard",
+    val checkFrequency: String = "每 30 分鐘",
     val subscriptionCount: Int = 0,
     val auctionCount: Int = 0,
     val logisticsCount: Int = 0
@@ -21,7 +25,7 @@ class AccountStore private constructor(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("shop_radar_account_v1", Context.MODE_PRIVATE)
 
     companion object {
-        const val DEFAULT_SERVER_URL = "https://shop-radar-worker.workers.dev"
+        const val DEFAULT_SERVER_URL = "https://shop-radar-worker.adobeado909123.workers.dev"
 
         @Volatile
         private var instance: AccountStore? = null
@@ -35,6 +39,16 @@ class AccountStore private constructor(private val context: Context) {
     fun getUsername(): String = prefs.getString("username", "").orEmpty()
     fun getToken(): String = prefs.getString("token", "").orEmpty()
     fun isLoggedIn(): Boolean = getUsername().isNotBlank() && getToken().isNotBlank()
+    fun getRole(): String = prefs.getString("user_role", "standard").orEmpty()
+
+    fun getDeviceId(): String {
+        var id = prefs.getString("device_id", "")
+        if (id.isNullOrBlank()) {
+            id = UUID.randomUUID().toString()
+            prefs.edit().putString("device_id", id).apply()
+        }
+        return id
+    }
 
     fun getServerUrl(): String {
         val raw = prefs.getString("server_url", DEFAULT_SERVER_URL).orEmpty().trim()
@@ -59,8 +73,58 @@ class AccountStore private constructor(private val context: Context) {
         prefs.edit()
             .remove("username")
             .remove("token")
+            .remove("user_role")
             .remove("last_sync_time")
             .apply()
+    }
+
+    /**
+     * 安裝即用：開箱自動裝置連線，無需手動填寫帳號密碼即可接收推播
+     */
+    suspend fun ensureDeviceRegistered(appContext: Context): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val endpoint = getServerUrl()
+            val deviceId = getDeviceId()
+            val fcm = getFcmToken()
+            val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+            val url = URL("$endpoint/api/device/auto-register")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+
+            val payload = JSONObject().apply {
+                put("device_id", deviceId)
+                put("fcm_token", fcm)
+                put("device_name", deviceName)
+            }.toString()
+
+            conn.outputStream.use { it.write(payload.toByteArray()) }
+            val status = conn.responseCode
+            val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+
+            val json = JSONObject(text.ifBlank { "{}" })
+            if (json.optBoolean("success", false)) {
+                val token = json.optString("token")
+                val uname = json.optString("username")
+                val role = json.optString("role", "standard")
+
+                if (getToken().isBlank()) {
+                    prefs.edit()
+                        .putString("username", uname)
+                        .putString("token", token)
+                        .putString("user_role", role)
+                        .apply()
+                }
+                "裝置連線就緒 ($uname)"
+            } else {
+                throw Exception("自動連線失敗 ($status)")
+            }
+        }
     }
 
     suspend fun login(username: String, pass: String, serverUrl: String? = null): Result<String> = withContext(Dispatchers.IO) {
@@ -74,6 +138,7 @@ class AccountStore private constructor(private val context: Context) {
             conn.connectTimeout = 10000
             conn.readTimeout = 10000
 
+            // 絕不於本地永久存儲密碼，純內存傳輸
             val payload = JSONObject().apply {
                 put("username", username.trim())
                 put("password", pass.trim())
@@ -88,17 +153,16 @@ class AccountStore private constructor(private val context: Context) {
             if (json.optBoolean("success", false)) {
                 val token = json.optString("token")
                 val uname = json.optString("username", username)
+                val role = json.optString("role", "standard")
                 serverUrl?.let { setServerUrl(it) }
                 prefs.edit()
                     .putString("username", uname)
                     .putString("token", token)
+                    .putString("user_role", role)
                     .apply()
 
-                // 自動將本地 FCM Token 綁定至伺服器
                 val fcm = getFcmToken()
-                if (fcm.isNotBlank()) {
-                    uploadFcmToken(fcm)
-                }
+                if (fcm.isNotBlank()) uploadFcmToken(fcm)
                 "登入成功"
             } else {
                 throw Exception(json.optString("message", "登入失敗，請確認帳號密碼"))
@@ -106,7 +170,7 @@ class AccountStore private constructor(private val context: Context) {
         }
     }
 
-    suspend fun register(username: String, pass: String, serverUrl: String? = null): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun register(username: String, pass: String, serverUrl: String? = null, role: String = "standard"): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
             val url = URL("$endpoint/api/auth/register")
@@ -120,6 +184,7 @@ class AccountStore private constructor(private val context: Context) {
             val payload = JSONObject().apply {
                 put("username", username.trim())
                 put("password", pass.trim())
+                put("role", role)
             }.toString()
 
             conn.outputStream.use { it.write(payload.toByteArray()) }
@@ -131,20 +196,19 @@ class AccountStore private constructor(private val context: Context) {
             if (json.optBoolean("success", false)) {
                 val token = json.optString("token")
                 val uname = json.optString("username", username)
+                val resRole = json.optString("role", role)
                 serverUrl?.let { setServerUrl(it) }
                 prefs.edit()
                     .putString("username", uname)
                     .putString("token", token)
+                    .putString("user_role", resRole)
                     .apply()
 
-                // 自動將本地 FCM Token 綁定至伺服器
                 val fcm = getFcmToken()
-                if (fcm.isNotBlank()) {
-                    uploadFcmToken(fcm)
-                }
+                if (fcm.isNotBlank()) uploadFcmToken(fcm)
                 "註冊成功並已登入"
             } else {
-                throw Exception(json.optString("message", "註冊失敗，請確認帳號格式"))
+                throw Exception(json.optString("message", "註冊失敗"))
             }
         }
     }
@@ -176,9 +240,14 @@ class AccountStore private constructor(private val context: Context) {
     suspend fun syncToCloud(appContext: Context): Result<SyncResult> = withContext(Dispatchers.IO) {
         runCatching {
             val token = getToken()
-            if (token.isBlank()) throw Exception("請先登入帳號後再進行同步")
+            if (token.isBlank()) {
+                // 若無 token，先嘗試自動開箱連線
+                ensureDeviceRegistered(appContext)
+            }
+            val activeToken = getToken()
+            if (activeToken.isBlank()) throw Exception("請先連線至伺服器")
 
-            // 1. 整理訂閱項目
+            // 1. 訂閱項目
             val subsArray = JSONArray()
             val prodStore = ProductSubscriptionStore(appContext)
             prodStore.list().forEach { p ->
@@ -198,7 +267,7 @@ class AccountStore private constructor(private val context: Context) {
                 })
             }
 
-            // 2. 整理競標項目
+            // 2. 競標項目
             val auctionsArray = JSONArray()
             val auctionStore = AuctionStore(appContext)
             auctionStore.list().forEach { a ->
@@ -208,7 +277,7 @@ class AccountStore private constructor(private val context: Context) {
                 })
             }
 
-            // 3. 整理物流包裹
+            // 3. 物流包裹
             val logisticsArray = JSONArray()
             val logStore = LogisticsStore(appContext)
             val parcels = logStore.loadAll()
@@ -235,7 +304,7 @@ class AccountStore private constructor(private val context: Context) {
             conn.requestMethod = "POST"
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Authorization", "Bearer $activeToken")
             conn.connectTimeout = 12000
             conn.readTimeout = 12000
 
@@ -247,10 +316,18 @@ class AccountStore private constructor(private val context: Context) {
             val json = JSONObject(text.ifBlank { "{}" })
             if (json.optBoolean("success", false)) {
                 val now = System.currentTimeMillis()
-                prefs.edit().putLong("last_sync_time", now).apply()
+                val role = json.optString("role", getRole())
+                val freq = json.optString("check_frequency", if (role == "low") "每 60 分鐘" else "每 30 分鐘")
+                prefs.edit()
+                    .putLong("last_sync_time", now)
+                    .putString("user_role", role)
+                    .apply()
+
                 SyncResult(
                     success = true,
-                    message = "同步成功！已將監控委託至 Cloudflare 雲端伺服器",
+                    message = "同步成功！",
+                    role = role,
+                    checkFrequency = freq,
                     subscriptionCount = subsArray.length(),
                     auctionCount = auctionsArray.length(),
                     logisticsCount = logisticsArray.length()
@@ -264,7 +341,7 @@ class AccountStore private constructor(private val context: Context) {
     suspend fun sendTestPush(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val token = getToken()
-            if (token.isBlank()) throw Exception("請先登入帳號")
+            if (token.isBlank()) throw Exception("請先連線至伺服器")
             val fcm = getFcmToken()
             if (fcm.isBlank()) throw Exception("尚未取得 FCM Device Token，請稍候重試")
 

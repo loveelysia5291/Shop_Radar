@@ -61,6 +61,7 @@ fun AboutScreen(
     val accountStore = remember { AccountStore.get(context) }
     var username by remember { mutableStateOf(accountStore.getUsername()) }
     var isLoggedIn by remember { mutableStateOf(accountStore.isLoggedIn()) }
+    var role by remember { mutableStateOf(accountStore.getRole()) }
     var serverUrl by remember { mutableStateOf(accountStore.getServerUrl()) }
     var fcmToken by remember { mutableStateOf(accountStore.getFcmToken()) }
     var lastSyncTime by remember { mutableStateOf(accountStore.getLastSyncTime()) }
@@ -80,16 +81,17 @@ fun AboutScreen(
         }
     }
 
-    // 初始化自動取得 FCM Device Token
+    // 初始化自動取得 FCM Device Token 並自動連線
     LaunchedEffect(Unit) {
-        if (fcmToken.isBlank()) {
-            FcmTokenManager.fetchToken(context) { token ->
-                if (!token.isNullOrBlank()) {
-                    fcmToken = token
-                    if (isLoggedIn) {
-                        scope.launch { accountStore.uploadFcmToken(token) }
-                    }
-                }
+        FcmTokenManager.fetchToken(context) { token ->
+            if (!token.isNullOrBlank()) {
+                fcmToken = token
+            }
+            scope.launch {
+                accountStore.ensureDeviceRegistered(context)
+                username = accountStore.getUsername()
+                isLoggedIn = accountStore.isLoggedIn()
+                role = accountStore.getRole()
             }
         }
     }
@@ -135,7 +137,7 @@ fun AboutScreen(
                             Column(Modifier.weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = if (isLoggedIn) username else "訪客模式 (未登入)",
+                                        text = if (username.isNotBlank()) username else "裝置已自動連線",
                                         style = MaterialTheme.typography.titleLarge,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
@@ -145,14 +147,14 @@ fun AboutScreen(
                                     Spacer(Modifier.width(8.dp))
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = if (isLoggedIn) Color(0xFFDCFCE7) else Color(0xFFFEF3C7)
+                                        color = if (role == "low") Color(0xFFFEF3C7) else Color(0xFFDCFCE7)
                                     ) {
                                         Text(
-                                            text = if (isLoggedIn) "雲端已連線" else "離線",
+                                            text = if (role == "low") "60分鐘 (低權限)" else "30分鐘 (標準)",
                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = if (isLoggedIn) Color(0xFF15803D) else Color(0xFFB45309)
+                                            color = if (role == "low") Color(0xFFB45309) else Color(0xFF15803D)
                                         )
                                     }
                                 }
@@ -160,7 +162,7 @@ fun AboutScreen(
                                 Spacer(Modifier.height(4.dp))
 
                                 Text(
-                                    text = if (isLoggedIn) "24 小時邊緣伺服器自動監控中" else "登入後即可啟用 Cloudflare 雲端推播",
+                                    text = if (isLoggedIn) "已綁定專屬帳號，24小時自動監控" else "已啟用開箱即用自動連線模式",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -171,123 +173,111 @@ fun AboutScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         Spacer(Modifier.height(14.dp))
 
-                        if (isLoggedIn) {
-                            // 已登入操作列
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        // 操作列：一鍵同步與測試推播
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        syncing = true
+                                        val res = accountStore.syncToCloud(context)
+                                        syncing = false
+                                        res.onSuccess {
+                                            lastSyncTime = System.currentTimeMillis()
+                                            role = it.role
+                                            Toast.makeText(
+                                                context,
+                                                "同步完成！(${it.checkFrequency}，訂閱:${it.subscriptionCount}, 競拍:${it.auctionCount}, 物流:${it.logisticsCount})",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }.onFailure {
+                                            Toast.makeText(context, "同步失敗: ${it.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                enabled = !syncing,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
                             ) {
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            syncing = true
-                                            val res = accountStore.syncToCloud(context)
-                                            syncing = false
-                                            res.onSuccess {
-                                                lastSyncTime = System.currentTimeMillis()
-                                                Toast.makeText(
-                                                    context,
-                                                    "同步完成！(訂閱:${it.subscriptionCount}, 競拍:${it.auctionCount}, 物流:${it.logisticsCount})",
-                                                    Toast.LENGTH_LONG
-                                                ).show()
-                                            }.onFailure {
-                                                Toast.makeText(context, "同步失敗: ${it.message}", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    },
-                                    enabled = !syncing,
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    if (syncing) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.onPrimary
-                                        )
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("同步中...", fontSize = 13.sp)
-                                    } else {
-                                        Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp))
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("一鍵同步", fontSize = 13.sp)
-                                    }
-                                }
-
-                                OutlinedButton(
-                                    onClick = {
-                                        scope.launch {
-                                            testingPush = true
-                                            val res = accountStore.sendTestPush()
-                                            testingPush = false
-                                            res.onSuccess {
-                                                Toast.makeText(context, it, Toast.LENGTH_LONG).show()
-                                            }.onFailure {
-                                                Toast.makeText(context, "測試推播失敗: ${it.message}", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    },
-                                    enabled = !testingPush,
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    if (testingPush) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("發送中...", fontSize = 13.sp)
-                                    } else {
-                                        Icon(Icons.Default.NotificationsActive, null, Modifier.size(18.dp))
-                                        Spacer(Modifier.width(6.dp))
-                                        Text("測試推播", fontSize = 13.sp)
-                                    }
+                                if (syncing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("同步中...", fontSize = 13.sp)
+                                } else {
+                                    Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("一鍵同步", fontSize = 13.sp)
                                 }
                             }
 
-                            Spacer(Modifier.height(8.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        testingPush = true
+                                        val res = accountStore.sendTestPush()
+                                        testingPush = false
+                                        res.onSuccess {
+                                            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+                                        }.onFailure {
+                                            Toast.makeText(context, "測試推播失敗: ${it.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                enabled = !testingPush,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
                             ) {
-                                Text(
-                                    text = if (lastSyncTime > 0) "上次同步: " + SimpleDateFormat("MM/dd HH:mm", Locale.TAIWAN).format(Date(lastSyncTime))
-                                    else "尚未同步過資料",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.outline
-                                )
+                                if (testingPush) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("發送中...", fontSize = 13.sp)
+                                } else {
+                                    Icon(Icons.Default.NotificationsActive, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("測試推播", fontSize = 13.sp)
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (lastSyncTime > 0) "上次同步: " + SimpleDateFormat("MM/dd HH:mm", Locale.TAIWAN).format(Date(lastSyncTime))
+                                else "尚未同步過資料",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            if (isLoggedIn) {
                                 TextButton(
                                     onClick = {
                                         accountStore.logout()
                                         isLoggedIn = false
                                         username = ""
+                                        role = "standard"
                                         Toast.makeText(context, "已登出帳號", Toast.LENGTH_SHORT).show()
                                     }
                                 ) {
                                     Text("登出帳號", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                                 }
-                            }
-                        } else {
-                            // 未登入提示與登入按鈕
-                            Text(
-                                "登入 Cloudflare Worker 雲端帳號後，將由全球邊緣節點 24 小時在後台替您定時巡查跳蚤本舖最新上架商品、露天/雅虎競標超標及超商包裹貨況，並透過 Google FCM 官方推播直接喚醒手機通知欄。App 無須常駐背景，徹底省電免被系統殺後台！",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                lineHeight = 18.sp
-                            )
-                            Spacer(Modifier.height(14.dp))
-                            Button(
-                                onClick = { showAuthDialog = true },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Default.Login, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text("登入 / 註冊帳號")
+                            } else {
+                                TextButton(onClick = { showAuthDialog = true }) {
+                                    Text("自訂帳號密碼登入", fontSize = 12.sp)
+                                }
                             }
                         }
                     }
@@ -337,6 +327,19 @@ fun AboutScreen(
 
                         Spacer(Modifier.height(10.dp))
 
+                        // 開啟雲端管理後台 (Web Admin) 按鈕
+                        OutlinedButton(
+                            onClick = { uriHandler.openUri("$serverUrl/admin") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.AdminPanelSettings, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("開啟雲端管理後台 (Web Admin)", fontSize = 13.sp)
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+
                         // FCM Token 狀態
                         Row(
                             modifier = Modifier
@@ -350,7 +353,7 @@ fun AboutScreen(
                             Column(Modifier.weight(1f)) {
                                 Text("Firebase Cloud Messaging (FCM) Token", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                                 Text(
-                                    if (fcmToken.isNotBlank()) "${fcmToken.take(12)}...${fcmToken.takeLast(10)}" else "尚未取得 Token (點右側重新獲取)",
+                                    if (fcmToken.isNotBlank()) "${fcmToken.take(12)}...${fcmToken.takeLast(10)}" else "尚未取得 Token",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium
                                 )
@@ -364,22 +367,6 @@ fun AboutScreen(
                                     modifier = Modifier.size(28.dp)
                                 ) {
                                     Icon(Icons.Default.ContentCopy, "複製 Token", Modifier.size(16.dp))
-                                }
-                            } else {
-                                IconButton(
-                                    onClick = {
-                                        FcmTokenManager.fetchToken(context) { token ->
-                                            if (!token.isNullOrBlank()) {
-                                                fcmToken = token
-                                                Toast.makeText(context, "已取得 FCM Token", Toast.LENGTH_SHORT).show()
-                                            } else {
-                                                Toast.makeText(context, "獲取失敗，請確認網路連線", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(Icons.Default.Refresh, "重新獲取", Modifier.size(16.dp))
                                 }
                             }
                         }
@@ -419,84 +406,35 @@ fun AboutScreen(
                                 }
                             }
                         }
-
-                        Spacer(Modifier.height(12.dp))
-
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "已強制移除 App 自己發送通知：所有背景檢查與提醒完全轉由 Cloudflare 雲端伺服器經由 FCM 發送，免除耗電與殺後台問題。",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    lineHeight = 16.sp
-                                )
-                            }
-                        }
                     }
                 }
             }
 
-            // Cloudflare Worker 架設指南卡片
+            // 高安全性與密碼防護說明卡片
             item {
                 LiquidGlassSurface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp)
                 ) {
                     Column(Modifier.padding(18.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.HelpOutline, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Text("Cloudflare 服務架設指南", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                            }
-                            TextButton(onClick = { showDeployGuideDialog = true }) {
-                                Text("詳細教學", fontSize = 13.sp)
-                            }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Text("高安全性與防護機制", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(10.dp))
+
                         Text(
-                            "本專案支援使用免費用戶額度在 https://www.cloudflare.com/ 架設專屬的監控 Worker 服務，24小時自動監控與推播。",
+                            "• 本機零密碼殘留：手機 SharedPreferences 絕不儲存任何明文密碼，僅保留受保護的授權 Token。\n" +
+                            "• 伺服器加鹽加密：採用 PBKDF2 10 萬次迭代加鹽雜湊 (Salt + PBKDF2-SHA256)，彩虹表與字典攻擊無法破解。\n" +
+                            "• 防暴力破解鎖定：連續密碼錯誤 5 次自動鎖定 15 分鐘，全面防止撞庫與暴力猜測。\n" +
+                            "• 智能頻率分級：一般與管理員帳號每 30 分鐘巡查，低權限帳號自動間隔 60 分鐘巡查，大幅降低被防護系統查封風險。\n" +
+                            "• 開箱即用：每支安裝的手機均自動生成專屬識別碼註冊連線，直接享有 FCM 推播。",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 18.sp
                         )
-
-                        Spacer(Modifier.height(12.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { uriHandler.openUri("https://www.cloudflare.com/zh-tw/") },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Default.OpenInNew, null, Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("前往 Cloudflare", fontSize = 12.sp)
-                            }
-                            Button(
-                                onClick = { showDeployGuideDialog = true },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Default.MenuBook, null, Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("架設步驟說明", fontSize = 12.sp)
-                            }
-                        }
                     }
                 }
             }
@@ -546,13 +484,13 @@ fun AboutScreen(
         AuthDialog(
             currentServerUrl = serverUrl,
             onDismiss = { showAuthDialog = false },
-            onAuthSuccess = { newUsername, newUrl ->
+            onAuthSuccess = { newUsername, newUrl, newRole ->
                 username = newUsername
                 isLoggedIn = true
                 serverUrl = newUrl
+                role = newRole
                 showAuthDialog = false
                 Toast.makeText(context, "歡迎，$newUsername！已成功登入", Toast.LENGTH_SHORT).show()
-                // 自動同步一次
                 scope.launch {
                     val syncRes = accountStore.syncToCloud(context)
                     syncRes.onSuccess { lastSyncTime = System.currentTimeMillis() }
@@ -585,7 +523,7 @@ fun AboutScreen(
 private fun AuthDialog(
     currentServerUrl: String,
     onDismiss: () -> Unit,
-    onAuthSuccess: (username: String, serverUrl: String) -> Unit
+    onAuthSuccess: (username: String, serverUrl: String, role: String) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -595,6 +533,7 @@ private fun AuthDialog(
     var inputUsername by remember { mutableStateOf("") }
     var inputPassword by remember { mutableStateOf("") }
     var inputServerUrl by remember { mutableStateOf(currentServerUrl) }
+    var selectedRole by remember { mutableStateOf("standard") } // "standard" (30分) 或 "low" (60分)
     var passwordVisible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -675,7 +614,7 @@ private fun AuthDialog(
                     value = inputPassword,
                     onValueChange = { inputPassword = it },
                     label = { Text("密碼") },
-                    placeholder = { Text("請輸入密碼") },
+                    placeholder = { Text("請輸入密碼 (至少4碼)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -688,14 +627,38 @@ private fun AuthDialog(
                     }
                 )
 
+                // 註冊時可選擇權限等級
+                if (isRegisterMode) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("選擇巡查權限等級：", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = selectedRole == "standard",
+                            onClick = { selectedRole = "standard" },
+                            label = { Text("標準 (每30分鐘)") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = selectedRole == "low",
+                            onClick = { selectedRole = "low" },
+                            label = { Text("低權限 (每1小時)") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
                 Spacer(Modifier.height(12.dp))
 
                 // 伺服器網址
                 OutlinedTextField(
                     value = inputServerUrl,
                     onValueChange = { inputServerUrl = it },
-                    label = { Text("Cloudflare Worker 伺服器網址") },
-                    placeholder = { Text("https://xxx.workers.dev") },
+                    label = { Text("Cloudflare Worker 網址") },
+                    placeholder = { Text("https://shop-radar-worker.xxx.workers.dev") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -729,13 +692,13 @@ private fun AuthDialog(
                                 loading = true
                                 errorMessage = null
                                 val result = if (isRegisterMode) {
-                                    accountStore.register(inputUsername, inputPassword, inputServerUrl)
+                                    accountStore.register(inputUsername, inputPassword, inputServerUrl, selectedRole)
                                 } else {
                                     accountStore.login(inputUsername, inputPassword, inputServerUrl)
                                 }
                                 loading = false
                                 result.onSuccess {
-                                    onAuthSuccess(inputUsername.trim(), inputServerUrl.trim())
+                                    onAuthSuccess(inputUsername.trim(), inputServerUrl.trim(), accountStore.getRole())
                                 }.onFailure {
                                     errorMessage = it.message ?: "操作失敗，請確認伺服器連線"
                                 }
@@ -870,7 +833,7 @@ private fun DeployGuideDialog(onDismiss: () -> Unit) {
                         StepItem(
                             stepNumber = "3",
                             title = "設定定時觸發程序 (Cron Triggers)",
-                            description = "在 Worker 的「觸發程序 (Triggers)」中，新增 Cron 觸發程序並填入 */10 * * * *（每 10 分鐘自動監控巡查一次）。"
+                            description = "在 Worker 的「觸發程序 (Triggers)」中，新增 Cron 觸發程序並填入 */30 * * * *（每 30 分鐘自動監控巡查一次，低權限帳號自動間隔 60 分鐘）。"
                         )
                     }
 
@@ -893,8 +856,8 @@ private fun DeployGuideDialog(onDismiss: () -> Unit) {
                     item {
                         StepItem(
                             stepNumber = "6",
-                            title = "在 App「關於」頁面登入並同步",
-                            description = "複製您的 Worker 網址（例如 https://shop-radar-worker.xxx.workers.dev），在 App 輸入並註冊帳號，點擊「一鍵同步」即可開始 24 小時雲端推播！"
+                            title = "開啟後台管理系統",
+                            description = "瀏覽網址 /admin 即可開啟登入後台，視覺化查看所有連線手機與調整 30 分鐘 / 1 小時權限。"
                         )
                     }
                 }

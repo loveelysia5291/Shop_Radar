@@ -318,15 +318,15 @@ class MainActivity : ComponentActivity() {
         runCatching {
             androidx.work.WorkManager.getInstance(this).cancelAllWork()
         }
+        val account = AccountStore.get(this)
         FcmTokenManager.fetchToken(this) { token ->
             if (!token.isNullOrBlank()) {
-                val account = AccountStore.get(this)
                 account.saveFcmToken(token)
-                if (account.isLoggedIn()) {
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                        account.uploadFcmToken(token)
-                    }
-                }
+            }
+            // 安裝即用：開箱自動裝置連線並同步至 Cloudflare Worker 伺服器
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                account.ensureDeviceRegistered(this@MainActivity)
+                account.syncToCloud(this@MainActivity)
             }
         }
         // Register on the actual Activity dispatcher before composing any screen.

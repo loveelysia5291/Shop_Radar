@@ -2,18 +2,17 @@ name = "shop-radar-worker"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# 每 10 分鐘邊緣定時排程自動監控
+# 每 30 分鐘定時排程自動巡查（低權限帳號自動間隔 60 分鐘）
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/30 * * * *"]
 
 # 綁定 KV 資料表（儲存帳號、FCM Token、監控商品與包裹）
-# 建立方式：wrangler kv:namespace create RADAR_KV 或在 Cloudflare 控制台直接點選建立
 # [[kv_namespaces]]
 # binding = "RADAR_KV"
 # id = "your-kv-namespace-id"
 
 [vars]
-# 方式一（推薦簡單快速）：在 Cloudflare 控制台填入 Firebase Server Key
+# 管理後台預設帳號（密碼請在 Cloudflare 控制台新增 Secret ADMIN_PASSWORD，預設 admin888）
+ADMIN_USERNAME = "admin"
+# Firebase FCM 金鑰（在 Cloudflare 控制台設定）
 # FCM_SERVER_KEY = "AAAA..."
-# 方式二：使用 Firebase 服務帳戶 Private Key JSON（FCM v1）
-# FCM_SERVICE_ACCOUNT_JSON = "{...}"
