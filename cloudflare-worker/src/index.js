@@ -185,7 +185,72 @@ export default {
         });
       }
 
-      // 後台 API：設定 FCM Server Key (免終端設定，直接網頁管理)
+      // 後台 API：設定 FCM HTTP v1 服務帳戶憑證 (Google Service Account JSON)
+      if (path === "/api/admin/set-fcm-service-account" && request.method === "POST") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const body = await request.json().catch(() => ({}));
+        let sa = body.service_account;
+        if (typeof sa === "string") {
+          try { sa = JSON.parse(sa); } catch (e) {
+            return jsonResponse({ success: false, message: "JSON 語法錯誤，請確認貼上的內容是否為正確的 JSON 格式" }, 400);
+          }
+        }
+        if (!sa || typeof sa !== "object") {
+          return jsonResponse({ success: false, message: "請提供有效的 Service Account JSON" }, 400);
+        }
+
+        const projectId = (sa.project_id || "").trim();
+        const clientEmail = (sa.client_email || "").trim();
+        const privateKey = (sa.private_key || "").trim();
+
+        if (!projectId || !clientEmail || !privateKey) {
+          return jsonResponse({
+            success: false,
+            message: "JSON 缺少關鍵欄位：project_id, client_email 或 private_key，請確認是否為從 Firebase 下載的金鑰"
+          }, 400);
+        }
+
+        // 測試驗證私鑰與 Google OAuth 2.0 連線
+        try {
+          await kvDelete(env, "cache:fcm_v1_token");
+          const testToken = await getGoogleOAuth2AccessToken(env, sa);
+          if (!testToken) throw new Error("未能取得 Google Access Token");
+        } catch (testErr) {
+          return jsonResponse({
+            success: false,
+            message: `憑證測試失敗，無法通過 Google OAuth 2.0 驗證: ${testErr.message}`
+          }, 400);
+        }
+
+        await kvPut(env, "config:fcm_service_account", JSON.stringify(sa));
+        return jsonResponse({
+          success: true,
+          message: `FCM HTTP v1 設定成功！已通過 Google OAuth 2.0 認證，專案 ID: [${projectId}]。`,
+          project_id: projectId,
+          client_email: clientEmail
+        });
+      }
+
+      // 後台 API：測試 FCM v1 OAuth 2.0 授權
+      if (path === "/api/admin/test-fcm-v1" && request.method === "POST") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        try {
+          await kvDelete(env, "cache:fcm_v1_token");
+          const token = await getGoogleOAuth2AccessToken(env);
+          return jsonResponse({
+            success: true,
+            message: `Google OAuth 2.0 驗證成功！已成功換取 Bearer 存取權杖 (${token.slice(0, 15)}...)`
+          });
+        } catch (e) {
+          return jsonResponse({ success: false, message: `OAuth 2.0 測試失敗: ${e.message}` }, 400);
+        }
+      }
+
+      // 後台 API：設定 FCM Server Key (舊版相容選項)
       if (path === "/api/admin/set-fcm-key" && request.method === "POST") {
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
@@ -196,19 +261,32 @@ export default {
           return jsonResponse({ success: false, message: "請輸入有效的 FCM 伺服器金鑰" }, 400);
         }
         await kvPut(env, "config:fcm_server_key", key);
-        return jsonResponse({ success: true, message: "FCM 伺服器金鑰已成功儲存！已可正常發送推播。" });
+        return jsonResponse({ success: true, message: "舊版 FCM 伺服器金鑰已成功儲存！" });
       }
 
-      // 後台 API：取得推播伺服器設定狀態
+      // 後台 API：取得推播伺服器設定狀態 (支援 FCM v1 與舊版檢測)
       if (path === "/api/admin/get-config" && request.method === "GET") {
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
-        const key = env.FCM_SERVER_KEY || await kvGet(env, "config:fcm_server_key");
+        let saData = null;
+        const rawSa = await kvGet(env, "config:fcm_service_account");
+        if (rawSa) {
+          try { saData = JSON.parse(rawSa); } catch (_) {}
+        }
+        if (!saData && env.FIREBASE_SERVICE_ACCOUNT) {
+          try { saData = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT); } catch (_) {}
+        }
+
+        const legacyKey = env.FCM_SERVER_KEY || await kvGet(env, "config:fcm_server_key");
+
         return jsonResponse({
           success: true,
-          has_fcm_key: !!key,
-          fcm_key_preview: key ? `${key.slice(0, 8)}...${key.slice(-6)}` : ""
+          has_v1: !!saData,
+          v1_project_id: saData?.project_id || "",
+          v1_client_email: saData?.client_email || "",
+          has_legacy_key: !!legacyKey,
+          legacy_key_preview: legacyKey ? `${legacyKey.slice(0, 8)}...${legacyKey.slice(-6)}` : ""
         });
       }
 
@@ -275,6 +353,8 @@ export default {
         }
 
         let sentCount = 0;
+        let attemptedCount = 0;
+        let lastResult = null;
         const usersListStr = await kvGet(env, "system:all_users");
         const list = usersListStr ? JSON.parse(usersListStr) : [];
         for (const u of list) {
@@ -283,12 +363,35 @@ export default {
           if (raw) {
             const user = JSON.parse(raw);
             if (user.fcmToken) {
-              await sendFcmNotification(env, user.fcmToken, { title, body: pushBody }, { type: "admin_broadcast" });
-              sentCount++;
+              attemptedCount++;
+              const res = await sendFcmNotification(env, user.fcmToken, { title, body: pushBody }, { type: "admin_broadcast" });
+              lastResult = res;
+              if (res.success) sentCount++;
             }
           }
         }
-        return jsonResponse({ success: true, message: `已成功發送給 ${sentCount} 台裝置` });
+
+        if (attemptedCount === 0) {
+          return jsonResponse({
+            success: true,
+            message: "目前系統中尚無已連線 FCM Token 的裝置，請在手機端開啟 App 登入以綁定推播憑證。"
+          });
+        }
+
+        if (sentCount === 0 && lastResult && !lastResult.success) {
+          return jsonResponse({
+            success: false,
+            message: `推播發送失敗: ${lastResult.error || "未知錯誤"}`,
+            details: lastResult
+          }, 400);
+        }
+
+        const apiText = lastResult?.api_version === "v1" ? "FCM HTTP v1" : "舊版 FCM";
+        return jsonResponse({
+          success: true,
+          message: `已透過 ${apiText} 發送給 ${sentCount}/${attemptedCount} 台有效裝置`,
+          details: lastResult
+        });
       }
 
       // 8. 人機驗證碼 (CAPTCHA) 生成 API (防止機器人濫發帳號)
@@ -748,8 +851,84 @@ async function checkLogistics(env, user) {
 }
 
 async function sendFcmNotification(env, fcmToken, notification, data = {}) {
-  const fcmKey = (await kvGet(env, "config:fcm_server_key")) || env.FCM_SERVER_KEY;
-  if (fcmKey) {
+  // 1. 優先嘗試 FCM HTTP v1 (Google Service Account OAuth 2.0 現代標準)
+  let sa = null;
+  const rawSa = await kvGet(env, "config:fcm_service_account");
+  if (rawSa) {
+    try { sa = JSON.parse(rawSa); } catch (_) {}
+  }
+  if (!sa && env.FIREBASE_SERVICE_ACCOUNT) {
+    try { sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT); } catch (_) {}
+  }
+
+  if (sa && sa.project_id && sa.private_key && sa.client_email) {
+    try {
+      const accessToken = await getGoogleOAuth2AccessToken(env, sa);
+      const projectId = sa.project_id.trim();
+      const type = data.type || "general";
+      const channelId = (type === "subscription_update" || type === "subscription") ? "fcm_subscriptions"
+        : (type === "logistics_update" || type === "logistics") ? "fcm_logistics"
+        : (type === "auction_outbid" || type === "auction") ? "fcm_auctions"
+        : "fcm_general";
+
+      const v1Payload = {
+        message: {
+          token: fcmToken,
+          notification: {
+            title: notification.title || "購物雷達通知",
+            body: notification.body || ""
+          },
+          data: sanitizeDataToStrings({
+            ...data,
+            title: notification.title || "購物雷達通知",
+            body: notification.body || ""
+          }),
+          android: {
+            priority: "HIGH",
+            notification: {
+              channel_id: channelId,
+              sound: "default",
+              default_sound: true,
+              notification_priority: "PRIORITY_HIGH"
+            }
+          }
+        }
+      };
+
+      const resp = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json; UTF-8"
+        },
+        body: JSON.stringify(v1Payload)
+      });
+
+      const respText = await resp.text();
+      let respJson = null;
+      try { respJson = JSON.parse(respText); } catch (_) {}
+
+      if (resp.ok) {
+        return { success: true, api_version: "v1", project: projectId, response: respJson || respText };
+      } else {
+        const errMsg = respJson?.error?.message || respText;
+        return {
+          success: false,
+          api_version: "v1",
+          status: resp.status,
+          error: `FCM v1 推播失敗 (${resp.status}): ${errMsg}`,
+          raw: respJson || respText
+        };
+      }
+    } catch (v1Err) {
+      console.error("FCM v1 發送異常:", v1Err);
+      return { success: false, api_version: "v1", error: v1Err.message };
+    }
+  }
+
+  // 2. 次要相容：舊版 FCM Server Key (Legacy HTTP)
+  const legacyKey = (await kvGet(env, "config:fcm_server_key")) || env.FCM_SERVER_KEY;
+  if (legacyKey) {
     try {
       const payload = {
         to: fcmToken,
@@ -759,15 +938,155 @@ async function sendFcmNotification(env, fcmToken, notification, data = {}) {
       };
       const resp = await fetch("https://fcm.googleapis.com/fcm/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `key=${fcmKey}` },
+        headers: { "Content-Type": "application/json", "Authorization": `key=${legacyKey}` },
         body: JSON.stringify(payload)
       });
-      return { success: resp.ok, response: await resp.text() };
+      const respText = await resp.text();
+      return { success: resp.ok, api_version: "legacy", response: respText };
     } catch (e) {
-      return { success: false, error: e.message };
+      return { success: false, api_version: "legacy", error: e.message };
     }
   }
-  return { success: false, error: "尚未設定 FCM_SERVER_KEY (請至管理員後台輸入金鑰)" };
+
+  return {
+    success: false,
+    error: "尚未設定推播憑證！請至管理員後台設定【FCM HTTP v1 服務帳戶私密金鑰 (Service Account JSON)】"
+  };
+}
+
+async function getGoogleOAuth2AccessToken(env, sa = null) {
+  // 1. 檢查快取的 Access Token
+  const cachedToken = await kvGet(env, "cache:fcm_v1_token");
+  if (cachedToken) {
+    return cachedToken;
+  }
+
+  // 2. 取得 Service Account 資料
+  let serviceAccount = sa;
+  if (!serviceAccount) {
+    const rawSa = await kvGet(env, "config:fcm_service_account");
+    if (rawSa) {
+      try { serviceAccount = JSON.parse(rawSa); } catch (_) {}
+    }
+  }
+  if (!serviceAccount && env.FIREBASE_SERVICE_ACCOUNT) {
+    try { serviceAccount = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT); } catch (_) {}
+  }
+
+  if (!serviceAccount || !serviceAccount.client_email || !serviceAccount.private_key || !serviceAccount.project_id) {
+    throw new Error("尚未設定 Firebase 服務帳戶私密金鑰 (Service Account JSON)");
+  }
+
+  const clientEmail = serviceAccount.client_email.trim();
+  const privateKeyPem = (serviceAccount.private_key || "").replace(/\\n/g, "\n");
+  const now = Math.floor(Date.now() / 1000);
+
+  // 3. 匯入 PKCS#8 私鑰至 Web Crypto
+  let cryptoKey;
+  try {
+    const der = pemToDer(privateKeyPem);
+    cryptoKey = await crypto.subtle.importKey(
+      "pkcs8",
+      der,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+  } catch (keyErr) {
+    throw new Error(`私鑰解析失敗，請確認是否為 Firebase 官方提供的 PKCS#8 私密金鑰 (${keyErr.message})`);
+  }
+
+  // 4. 建立 JWT
+  const jwtHeader = { alg: "RS256", typ: "JWT" };
+  const jwtClaim = {
+    iss: clientEmail,
+    scope: "https://www.googleapis.com/auth/firebase.messaging",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now
+  };
+
+  const headerB64 = base64UrlEncode(JSON.stringify(jwtHeader));
+  const claimB64 = base64UrlEncode(JSON.stringify(jwtClaim));
+  const signPayload = `${headerB64}.${claimB64}`;
+
+  // 5. 簽署 RS256
+  const signatureBuffer = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" },
+    cryptoKey,
+    new TextEncoder().encode(signPayload)
+  );
+
+  const signedJwt = `${signPayload}.${base64UrlEncode(signatureBuffer)}`;
+
+  // 6. 向 Google OAuth 2.0 端點換取 Access Token
+  const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: signedJwt
+    }).toString()
+  });
+
+  const tokenText = await tokenResp.text();
+  let tokenData = null;
+  try { tokenData = JSON.parse(tokenText); } catch (_) {}
+
+  if (!tokenResp.ok || !tokenData || !tokenData.access_token) {
+    const errDesc = tokenData?.error_description || tokenData?.error || tokenText;
+    throw new Error(`Google OAuth 2.0 授權失敗 (${tokenResp.status}): ${errDesc}`);
+  }
+
+  // 7. 快取 Token (Google Token 預設有效 3600 秒，快取 3000 秒)
+  const expiresIn = Number(tokenData.expires_in) || 3600;
+  const cacheTtl = Math.max(expiresIn - 300, 60);
+  await kvPut(env, "cache:fcm_v1_token", tokenData.access_token, cacheTtl);
+
+  return tokenData.access_token;
+}
+
+function sanitizeDataToStrings(data) {
+  const result = {};
+  if (!data || typeof data !== "object") return result;
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined && value !== null) {
+      result[key] = String(value);
+    }
+  }
+  return result;
+}
+
+function pemToDer(pem) {
+  const cleanPem = pem
+    .replace(/-----BEGIN [A-Z ]+-----/g, "")
+    .replace(/-----END [A-Z ]+-----/g, "")
+    .replace(/\s+/g, "");
+  const binaryString = atob(cleanPem);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function base64UrlEncode(data) {
+  let binary = "";
+  if (typeof data === "string") {
+    const utf8Bytes = new TextEncoder().encode(data);
+    for (let i = 0; i < utf8Bytes.length; i++) {
+      binary += String.fromCharCode(utf8Bytes[i]);
+    }
+  } else {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 // ====================== 安全強化函式 ======================
@@ -1003,20 +1322,45 @@ function handleAdminDashboardHtml(request, env) {
         <div class="stat-box"><div class="stat-val" id="lowUsers">0</div><div style="font-size:12px;color:#94a3b8;">低權限模式 (60分巡查)</div></div>
       </div>
 
-      <!-- FCM 金鑰即時設定卡片 -->
-      <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
-          <h3 style="color: #38bdf8;">🔑 FCM 雲端推播金鑰設定 (免終端指令)</h3>
+      <!-- FCM HTTP v1 雲端推播憑證設定卡片 -->
+      <div class="card" style="border: 1px solid #0284c7;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <h3 style="color: #38bdf8; font-size: 16px;">🔑 FCM HTTP v1 雲端推播設定 (現代 OAuth 2.0 驗證)</h3>
+            <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Google 官方標準規範，採用 Service Account 私鑰自動產生短期 Bearer Token</p>
+          </div>
           <span id="fcmKeyStatus" class="badge" style="background: #78350f; color: #fbbf24;">檢測中...</span>
         </div>
-        <p style="font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 19px;">
-          請至 Firebase Console (專案設定 -&gt; 雲端傳訊 Cloud Messaging -&gt; 伺服器金鑰 Server Key) 複製並貼上於下方，儲存後立即生效，雲端巡查即可直接推播通知至每台 Android 手機！
-        </p>
-        <div style="display: flex; gap: 10px;">
-          <input type="password" id="fcmKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="貼上 Firebase 伺服器金鑰 (AAAA...)" />
-          <button class="btn" style="height: 42px; white-space: nowrap;" onclick="doSaveFcmKey()">儲存金鑰</button>
+
+        <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 10px; margin-bottom: 14px; border: 1px dashed #334155;">
+          <h4 style="color: #f1f5f9; font-size: 13px; margin-bottom: 6px;">📋 3 步快速取得 Service Account JSON 憑證：</h4>
+          <ol style="font-size: 12px; color: #cbd5e1; padding-left: 20px; line-height: 20px;">
+            <li>前往 <a href="https://console.firebase.google.com/" target="_blank" style="color: #38bdf8; text-decoration: underline;">Firebase Console</a> 開啟您的專案。</li>
+            <li>進入 <strong>專案設定</strong> ➔ 點選 <strong>「服務帳戶」(Service accounts)</strong> 標籤頁。</li>
+            <li>點擊 <strong>「產生新的私密金鑰」(Generate new private key)</strong>，將下載的 <code>.json</code> 檔案在此上傳或貼上內容。</li>
+          </ol>
         </div>
-        <p id="fcmKeyMsg" style="font-size: 12px; margin-top: 8px; display: none;"></p>
+
+        <div style="margin-bottom: 12px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">選擇 JSON 檔案 或 直接於下方貼上內容：</label>
+          <input type="file" id="saFileInput" accept=".json,application/json" class="input" style="padding: 6px; margin-bottom: 8px;" onchange="handleSaFileSelect(event)" />
+          <textarea id="saJsonInput" class="input" style="height: 100px; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="請貼上 Firebase 下載的 service-account.json 完整內容..."></textarea>
+        </div>
+
+        <div style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
+          <button class="btn" style="background: #334155; color: #fff;" onclick="doTestFcmV1()">🔍 測試 OAuth 2.0 授權</button>
+          <button class="btn" style="padding: 10px 20px;" onclick="doSaveFcmServiceAccount()">🚀 儲存並驗證 FCM v1 憑證</button>
+        </div>
+        <p id="fcmKeyMsg" style="font-size: 13px; margin-top: 10px; display: none; line-height: 18px;"></p>
+
+        <!-- 摺疊：舊版 FCM Server Key (相容選項) -->
+        <details style="margin-top: 14px; border-top: 1px solid #334155; padding-top: 10px;">
+          <summary style="font-size: 12px; color: #64748b; cursor: pointer;">舊版相容選項 (FCM Legacy Server Key)</summary>
+          <div style="margin-top: 8px; display: flex; gap: 10px;">
+            <input type="password" id="fcmLegacyKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="舊版 FCM Server Key (AAAA...)" />
+            <button class="btn" style="background: #334155; color: #fff; white-space: nowrap;" onclick="doSaveLegacyFcmKey()">儲存舊版金鑰</button>
+          </div>
+        </details>
       </div>
 
       <div class="card">
@@ -1221,57 +1565,117 @@ function handleAdminDashboardHtml(request, env) {
       loadDevices();
     }
 
+    function handleSaFileSelect(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        document.getElementById("saJsonInput").value = evt.target.result;
+      };
+      reader.readAsText(file);
+    }
+
     async function loadConfig() {
       try {
         const res = await fetch("/api/admin/get-config", { headers: { "Authorization": "Bearer " + adminToken } });
         if (res.status === 401) return logoutAdmin();
         const data = await res.json();
         const statusEl = document.getElementById("fcmKeyStatus");
-        const inputEl = document.getElementById("fcmKeyInput");
 
-        if (data.has_fcm_key) {
-          statusEl.innerText = "● 已設定 (" + (data.fcm_key_preview || "") + ")";
+        if (data.has_v1) {
+          statusEl.innerText = "● FCM HTTP v1 正常 (" + (data.v1_project_id || "有效") + ")";
           statusEl.className = "badge badge-30";
-          inputEl.placeholder = "已設定金鑰 (" + (data.fcm_key_preview || "") + ")，若要更新請輸入新金鑰";
-        } else {
-          statusEl.innerText = "○ 尚未設定 (無法發送推播)";
+        } else if (data.has_legacy_key) {
+          statusEl.innerText = "▲ 舊版 FCM Key (" + data.legacy_key_preview + ")";
           statusEl.className = "badge badge-60";
-          inputEl.placeholder = "貼上 Firebase 伺服器金鑰 (AAAA...)";
+        } else {
+          statusEl.innerText = "○ 尚未設定推播憑證 (無法推播)";
+          statusEl.className = "badge badge-60";
         }
       } catch (_) {}
     }
 
-    async function doSaveFcmKey() {
-      const key = document.getElementById("fcmKeyInput").value.trim();
+    async function doSaveFcmServiceAccount() {
+      const val = document.getElementById("saJsonInput").value.trim();
       const msg = document.getElementById("fcmKeyMsg");
       msg.style.display = "none";
 
-      if (!key) {
-        alert("請輸入有效的 FCM 伺服器金鑰");
+      if (!val) {
+        alert("請貼上或選擇 Firebase 下載的 service-account.json 憑證檔案");
         return;
       }
 
+      let parsed;
+      try {
+        parsed = JSON.parse(val);
+      } catch (e) {
+        alert("JSON 語法解析失敗，請確認貼上的文字是否完整！");
+        return;
+      }
+
+      msg.style.color = "#38bdf8";
+      msg.innerText = "⏳ 正在驗證私鑰並向 Google OAuth 2.0 換取存取權杖...";
+      msg.style.display = "block";
+
+      try {
+        const res = await fetch("/api/admin/set-fcm-service-account", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          body: JSON.stringify({ service_account: parsed })
+        });
+        const data = await res.json();
+        if (data.success) {
+          msg.style.color = "#34d399";
+          msg.innerText = "✅ " + data.message;
+          document.getElementById("saJsonInput").value = "";
+          loadConfig();
+        } else {
+          msg.style.color = "var(--err)";
+          msg.innerText = "❌ " + (data.message || "驗證或儲存失敗");
+        }
+      } catch (e) {
+        msg.style.color = "var(--err)";
+        msg.innerText = "❌ 連線錯誤: " + e.message;
+      }
+    }
+
+    async function doTestFcmV1() {
+      const msg = document.getElementById("fcmKeyMsg");
+      msg.style.color = "#38bdf8";
+      msg.innerText = "⏳ 正在測試 Google OAuth 2.0 驗證換證...";
+      msg.style.display = "block";
+
+      try {
+        const res = await fetch("/api/admin/test-fcm-v1", {
+          method: "POST", headers: { "Authorization": "Bearer " + adminToken }
+        });
+        const data = await res.json();
+        if (data.success) {
+          msg.style.color = "#34d399";
+          msg.innerText = "✅ " + data.message;
+        } else {
+          msg.style.color = "var(--err)";
+          msg.innerText = "❌ " + (data.message || "測試失敗");
+        }
+      } catch (e) {
+        msg.style.color = "var(--err)";
+        msg.innerText = "❌ 連線錯誤: " + e.message;
+      }
+    }
+
+    async function doSaveLegacyFcmKey() {
+      const key = document.getElementById("fcmLegacyKeyInput").value.trim();
+      if (!key) return alert("請輸入舊版 FCM Server Key");
       try {
         const res = await fetch("/api/admin/set-fcm-key", {
           method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
           body: JSON.stringify({ fcm_server_key: key })
         });
         const data = await res.json();
-        if (data.success) {
-          msg.style.color = "#34d399";
-          msg.innerText = "✅ " + data.message;
-          msg.style.display = "block";
-          document.getElementById("fcmKeyInput").value = "";
-          loadConfig();
-        } else {
-          msg.style.color = "var(--err)";
-          msg.innerText = "❌ " + (data.message || "儲存失敗");
-          msg.style.display = "block";
-        }
+        alert(data.message || (data.success ? "舊版金鑰已儲存" : "儲存失敗"));
+        loadConfig();
       } catch (e) {
-        msg.style.color = "var(--err)";
-        msg.innerText = "❌ 連線錯誤: " + e.message;
-        msg.style.display = "block";
+        alert("連線錯誤: " + e.message);
       }
     }
 
