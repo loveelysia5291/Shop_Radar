@@ -243,16 +243,6 @@ internal object AuctionNotifications {
 }
 
 private fun notifyOutbid(context: Context, url: String, title: String, price: Long): Boolean {
-    val channel = RefreshNotificationAccess.CHANNEL_AUCTIONS
-    RefreshNotificationAccess.createChannels(context)
-    if (!RefreshNotificationAccess.enabled(context, channel)) return false
-    val intent = Intent(context, MainActivity::class.java).putExtra("openAuctions", true)
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-    val pending = PendingIntent.getActivity(context, url.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    return try {
-        NotificationManagerCompat.from(context).notify(url.hashCode(), NotificationCompat.Builder(context, channel)
-            .setSmallIcon(R.drawable.ic_notification).setContentTitle("競標已被超過：NT$$price")
-            .setContentText(title).setContentIntent(pending).setAutoCancel(true).build())
-        true
-    } catch (_: SecurityException) { false /* The in-app alert remains available. */ }
+    // 強制移除 App 自己發送通知：背景推播統一由 Cloudflare Worker 經由 FCM 推送至手機
+    return false
 }

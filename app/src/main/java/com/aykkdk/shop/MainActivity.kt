@@ -119,25 +119,31 @@ private fun AdaptiveCardGrid(
 @Composable
 private fun RadarNavigation(selected: Int, onSelect: (Int) -> Unit) {
     val buttons: @Composable () -> Unit = {
-        listOf("搜尋", "訂閱", "競拍", "工具").forEachIndexed { i, name ->
+        listOf("搜尋", "訂閱", "競拍", "工具", "關於").forEachIndexed { i, name ->
             val active = selected == i
             val scale by animateFloatAsState(if (active) 1.08f else 1f, tween(220), label = "tabScale")
             val background by animateColorAsState(if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent, tween(220), label = "tabBackground")
             val foregroundColor by animateColorAsState(if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, tween(220), label = "tabForeground")
             FilledIconToggleButton(checked = active, onCheckedChange = { onSelect(i) },
-                modifier = Modifier.size(48.dp).graphicsLayer { scaleX = scale; scaleY = scale },
+                modifier = Modifier.size(46.dp).graphicsLayer { scaleX = scale; scaleY = scale },
                 colors = IconButtonDefaults.filledIconToggleButtonColors(
                     containerColor = background, contentColor = foregroundColor,
                     checkedContainerColor = background, checkedContentColor = foregroundColor)) {
-                Icon(when (i) { 0 -> Icons.Default.Search; 1 -> Icons.Default.Store; 2 -> Icons.Default.Timer; else -> Icons.Default.Build }, name)
+                Icon(when (i) {
+                    0 -> Icons.Default.Search
+                    1 -> Icons.Default.Store
+                    2 -> Icons.Default.Timer
+                    3 -> Icons.Default.Build
+                    else -> Icons.Default.Person
+                }, name)
             }
         }
     }
     LiquidGlassSurface(
-        Modifier.widthIn(max = 340.dp).fillMaxWidth(0.92f),
+        Modifier.widthIn(max = 380.dp).fillMaxWidth(0.96f),
         shape = RoundedCornerShape(30.dp)
     ) {
-        Row(Modifier.padding(6.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly,
+        Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically) { buttons() }
     }
 }
@@ -279,6 +285,7 @@ class MainActivity : ComponentActivity() {
     private var sharedSubscription by mutableStateOf<SharedSubscriptionRequest?>(null)
     private var shareError by mutableStateOf<String?>(null)
     private var subscriptionNotification by mutableStateOf<SubscriptionNotificationRoute?>(null)
+    private var fcmTargetTab by mutableIntStateOf(-1)
     private fun receiveSubscriptionNotification(intent: Intent) {
         if (intent.action != SubscriptionNotificationRoute.ACTION) return
         subscriptionNotification = SubscriptionNotificationRoute.parse(
@@ -287,6 +294,13 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra(SubscriptionNotificationRoute.EXTRA_URL)
         intent.action = Intent.ACTION_MAIN
         intent.data = null
+    }
+    private fun receiveFcmIntent(intent: Intent) {
+        if (intent.hasExtra(RadarFirebaseMessagingService.EXTRA_FCM_TAB)) {
+            val target = intent.getIntExtra(RadarFirebaseMessagingService.EXTRA_FCM_TAB, -1)
+            if (target in 0..4) fcmTargetTab = target
+            intent.removeExtra(RadarFirebaseMessagingService.EXTRA_FCM_TAB)
+        }
     }
     private fun receiveShare(intent: Intent) {
         if (intent.action != Intent.ACTION_SEND || intent.type != "text/plain") return
@@ -299,6 +313,22 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 建立 FCM 專用通知渠道並強制關閉本機背景 WorkManager 任務
+        RadarFirebaseMessagingService.createNotificationChannels(this)
+        runCatching {
+            androidx.work.WorkManager.getInstance(this).cancelAllWork()
+        }
+        FcmTokenManager.fetchToken(this) { token ->
+            if (!token.isNullOrBlank()) {
+                val account = AccountStore.get(this)
+                account.saveFcmToken(token)
+                if (account.isLoggedIn()) {
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        account.uploadFcmToken(token)
+                    }
+                }
+            }
+        }
         // Register on the actual Activity dispatcher before composing any screen.
         val screenBackCallback = object : OnBackPressedCallback(false) {
             override fun handleOnBackPressed() {
@@ -328,11 +358,12 @@ class MainActivity : ComponentActivity() {
         } else 0
         receiveShare(intent)
         receiveSubscriptionNotification(intent)
+        receiveFcmIntent(intent)
         setContent { CompositionLocalProvider(LocalScreenBackBinding provides screenBackBinding) {
             RadarLaunchHost(savedInstanceState == null, nativeReady = launchWindowDismissed) { RadarApp(openAuctions, foreground, sharedSubscription,
             onShareConsumed = { sharedSubscription = null }, shareError = shareError, onShareErrorConsumed = { shareError = null },
             subscriptionNotification = subscriptionNotification, onSubscriptionNotificationConsumed = { subscriptionNotification = null },
-            onMoveToBackground = { moveTaskToBack(true) }) } } }
+            onMoveToBackground = { moveTaskToBack(true) }, fcmTargetTab = fcmTargetTab, onFcmTabConsumed = { fcmTargetTab = -1 }) } } }
     }
     // Background initialization is deferred until after the search page's first frame.
     override fun onStart() { super.onStart(); foreground = true }
@@ -345,6 +376,7 @@ class MainActivity : ComponentActivity() {
         }
         receiveShare(intent)
         receiveSubscriptionNotification(intent)
+        receiveFcmIntent(intent)
     }
 }
 
@@ -354,7 +386,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     sharedSubscription: SharedSubscriptionRequest?, onShareConsumed: () -> Unit,
     shareError: String?, onShareErrorConsumed: () -> Unit,
     subscriptionNotification: SubscriptionNotificationRoute?, onSubscriptionNotificationConsumed: () -> Unit,
-    onMoveToBackground: () -> Unit) {
+    onMoveToBackground: () -> Unit,
+    fcmTargetTab: Int = -1,
+    onFcmTabConsumed: () -> Unit = {}) {
     val context = LocalContext.current
     val appearancePrefs = remember { context.getSharedPreferences("appearance", 0) }
     var themeMode by remember { mutableStateOf(appearancePrefs.getString("mode", if (Build.VERSION.SDK_INT >= 28) "system" else "light") ?: "light") }
@@ -380,15 +414,21 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     val uriHandler = LocalUriHandler.current
     // Search is deliberately the first rendered screen. The foreground auction
     // monitor is lifecycle-owned below; opening/switching tabs does not create extra polls.
-    val pager = rememberPagerState(initialPage = 0, pageCount = { 4 })
+    val pager = rememberPagerState(initialPage = 0, pageCount = { 5 })
     val pageFling = PagerDefaults.flingBehavior(pager)
     val navigationScope = rememberCoroutineScope()
     val tab = pager.currentPage
     LaunchedEffect(openAuctions) { if (openAuctions > 0) pager.animateScrollToPage(2) }
+    LaunchedEffect(fcmTargetTab) {
+        if (fcmTargetTab in 0..4) {
+            pager.animateScrollToPage(fcmTargetTab)
+            onFcmTabConsumed()
+        }
+    }
     LaunchedEffect(pager.isScrollInProgress) {
         if (!pager.isScrollInProgress && kotlin.math.abs(pager.currentPageOffsetFraction) > 0.001f) {
             val target = if (kotlin.math.abs(pager.currentPageOffsetFraction) >= 0.5f) {
-                if (pager.currentPageOffsetFraction > 0) (pager.currentPage + 1).coerceAtMost(3)
+                if (pager.currentPageOffsetFraction > 0) (pager.currentPage + 1).coerceAtMost(4)
                 else (pager.currentPage - 1).coerceAtLeast(0)
             } else {
                 pager.currentPage
@@ -1606,6 +1646,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                 2 -> AuctionScreen(modifier, foreground && pager.settledPage == 2,
                     refreshing = auctionRefreshing, onWarning = { warning = it })
                 3 -> LogisticsTrackingScreen(modifier)
+                4 -> AboutScreen(modifier, onNavigateToTab = { i -> navigationScope.launch { pager.animateScrollToPage(i) } })
 
             }
             }

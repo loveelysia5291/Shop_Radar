@@ -110,16 +110,8 @@ class BackgroundNotificationTestWorker(context: Context, params: WorkerParameter
             RefreshNotificationAccess.createChannels(applicationContext)
             if (!RefreshNotificationAccess.enabled(applicationContext, RefreshNotificationAccess.CHANNEL_SUBSCRIPTIONS)) "notification_blocked"
             else {
-                val intent = Intent(applicationContext, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                val pending = PendingIntent.getActivity(applicationContext, 304127, intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                val notification = NotificationCompat.Builder(applicationContext, RefreshNotificationAccess.CHANNEL_SUBSCRIPTIONS)
-                    .setSmallIcon(R.drawable.ic_notification).setContentTitle("背景通知測試")
-                    .setContentText("Android 已執行背景工作並送出通知。")
-                    .setContentIntent(pending).setAutoCancel(true).build()
-                NotificationManagerCompat.from(applicationContext).notify("background-test", 304127, notification)
-                "notification_sent"
+                // 強制移除 App 自己發送通知：背景推播統一由 Cloudflare Worker 經由 FCM 推送
+                "fcm_server_push_mode"
             }
         }.getOrDefault("notification_failed")
         prefs.edit().putString("probe", outcome).putLong("probeFinishedAt", System.currentTimeMillis()).commit()

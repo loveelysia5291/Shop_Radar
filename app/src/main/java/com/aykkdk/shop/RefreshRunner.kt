@@ -217,31 +217,7 @@ internal object RefreshRunner {
 
 internal object SubscriptionRefreshNotifications {
     fun show(context: Context, target: RefreshTarget, alerts: List<ProductSubscriptionAlert>, record: JSONObject? = null): Boolean {
-        val content = SubscriptionNotificationText.build(target, alerts, record) ?: return true
-        val channel = RefreshNotificationAccess.CHANNEL_SUBSCRIPTIONS
-        RefreshNotificationAccess.createChannels(context)
-        if (!RefreshNotificationAccess.enabled(context, channel)) return false
-        val id = target.key.hashCode()
-        val intent = Intent(context, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .setAction(SubscriptionNotificationRoute.ACTION)
-            .setData(android.net.Uri.parse(SubscriptionNotificationRoute.identity(target)))
-            .putExtra(SubscriptionNotificationRoute.EXTRA_KIND, target.kind.name)
-            .putExtra(SubscriptionNotificationRoute.EXTRA_URL, target.url)
-        val pending = PendingIntent.getActivity(context, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val builder = NotificationCompat.Builder(context, channel)
-            .setSmallIcon(R.drawable.ic_notification).setContentTitle(content.title)
-            .setContentText(content.text).setStyle(NotificationCompat.BigTextStyle().bigText(content.text))
-            .setContentIntent(pending).setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
-        if (target.kind == RefreshKind.SHOP) {
-            val eventAt = SubscriptionNotificationOrder.eventTime(alerts, record, System.currentTimeMillis())
-            builder.setWhen(eventAt).setShowWhen(true).setSortKey(SubscriptionNotificationOrder.sortKey(eventAt, target))
-        }
-        return try {
-            NotificationManagerCompat.from(context).notify("subscription-updates", id, builder.build())
-            true
-        } catch (_: SecurityException) { false /* Keep the journal for a later permitted background delivery. */ }
+        // 強制移除 App 自己發送通知：背景推播統一由 Cloudflare Worker 經由 FCM 推送至手機
+        return false
     }
 }

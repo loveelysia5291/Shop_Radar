@@ -2,25 +2,18 @@
 
 import android.content.Context
 import androidx.work.*
-import java.util.concurrent.TimeUnit
 
-/** Persist notification delivery separately from network-constrained inventory reads. */
+/** 本機背景通知已強制移除，改由 Cloudflare Worker 經由 FCM 推送。 */
 internal object PendingAlertDelivery {
     const val NAME = "radar-pending-alert-delivery"
     fun enqueue(context: Context) {
-        // APPEND avoids losing an alert committed just as the previous delivery
-        // finishes. An interrupted reader cannot cancel this independent work.
+        // 強制移除 App 自己發送通知：取消任何本地殘留工作
         runCatching {
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE,
-                OneTimeWorkRequestBuilder<PendingAlertDeliveryWorker>()
-                    .setBackoffCriteria(BackoffPolicy.LINEAR, 15, TimeUnit.MINUTES).build())
-        }.onFailure { BackgroundDeliveryCheck.check(context, "delivery_schedule_failed") }
+            WorkManager.getInstance(context).cancelUniqueWork(NAME)
+        }
     }
 }
 
 class PendingAlertDeliveryWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
-    override fun doWork(): Result {
-        val complete = BackgroundAlertDelivery.drainEnabled(applicationContext)
-        return if (!complete && runAttemptCount < 3) Result.retry() else Result.success()
-    }
+    override fun doWork(): Result = Result.success()
 }

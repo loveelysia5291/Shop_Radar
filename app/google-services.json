@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "103957284910",
+    "project_id": "shop-radar-push",
+    "storage_bucket": "shop-radar-push.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:103957284910:android:a1b2c3d4e5f60718293a4b",
+        "android_client_info": {
+          "package_name": "com.aykkdk.shop"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDummyKeyForShopRadarClientFcm00"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
