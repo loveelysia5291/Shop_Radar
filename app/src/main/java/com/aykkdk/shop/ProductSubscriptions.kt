@@ -49,6 +49,7 @@ class ProductSubscriptionStore(private val context: Context) {
         prefs.edit().putString(url, item.toString()).apply()
         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.PRODUCT, url))
         AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), 30)
+        AccountStore.get(context).triggerCloudSync(context)
     }
     fun addPublicUrl(raw: String, initial: PublicProductSnapshot? = null): ProductSubscriptionAddResult = synchronized(SubscriptionMutations.lock) {
         val market = Market.fromPublicProductUrl(raw)
@@ -65,6 +66,7 @@ class ProductSubscriptionStore(private val context: Context) {
         prefs.edit().putString(url, item.toString()).apply()
         if (initial == null) SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.PRODUCT, url))
         AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), 30)
+        AccountStore.get(context).triggerCloudSync(context)
         ProductSubscriptionAddResult(true, if (initial != null) "已訂閱商品，已完成首次讀取。"
             else "已訂閱商品，正在讀取名稱、價格與庫存。")
     }
@@ -74,6 +76,7 @@ class ProductSubscriptionStore(private val context: Context) {
         NotificationManagerCompat.from(context).cancel("subscription-updates", RefreshTarget(RefreshKind.PRODUCT, url).key.hashCode())
         synchronized(SubscriptionMutations.lock) { prefs.edit().remove(url).commit() }
         AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.PRODUCT, url))
+        AccountStore.get(context).triggerCloudSync(context)
     }
     fun list(): List<JSONObject> = prefs.all.values.mapNotNull {
         runCatching { JSONObject(it as String).also { item ->

@@ -1142,6 +1142,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         if (RefreshNotificationAccess.needsPermission(context)) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // 開 APP 自動刷新商品訂閱與競標
+        refreshSubscriptions()
+        refreshAuctions()
     }
     LaunchedEffect(dispatch, searchToken) {
         if (dispatch > 0 && queue.isNotEmpty()) {
@@ -1723,6 +1726,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                         shopsPrefs.edit().putString(previewShopUrl, saved.toString()).apply(); shopsVersion++
                         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.SHOP, previewShopUrl))
                         AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, previewShopUrl), 30)
+                        AccountStore.get(context).triggerCloudSync(context)
                         if (RefreshNotificationAccess.needsPermission(context)) {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
@@ -2465,6 +2469,7 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                 NotificationManagerCompat.from(context).cancel("subscription-updates", RefreshTarget(RefreshKind.SHOP, shopUrl).key.hashCode())
                 synchronized(SubscriptionMutations.lock) { prefs.edit().remove(shopUrl).commit() }
                 AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.SHOP, shopUrl))
+                AccountStore.get(context).triggerCloudSync(context)
                 localVersion++; pendingShopRemoval = null
             }) { Text("確定取消") } },
             dismissButton = { TextButton(onClick = { pendingShopRemoval = null }) { Text("保留訂閱") } })
@@ -2626,6 +2631,7 @@ private fun subscribeListing(context: android.content.Context, product: Product)
             store.add(url)
             store.update(url) { it.put("title", product.title).put("image", product.image).put("isAdult", product.isAdult || AdultVisibility.adultText(product.title)) }
             ImageCachePolicy.record(context, listOf(product))
+            AccountStore.get(context).triggerCloudSync(context)
             "已訂閱競標：${product.title}"
         } else {
             ProductSubscriptionStore(context).add(product)

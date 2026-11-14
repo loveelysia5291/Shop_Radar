@@ -3,7 +3,9 @@ package com.aykkdk.shop
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -431,6 +433,15 @@ class AccountStore private constructor(private val context: Context) {
             } else {
                 throw Exception(json.optString("message", "伺服器同步失敗 ($status)"))
             }
+        }
+    }
+
+    fun triggerCloudSync(context: Context) {
+        if (!isLoggedIn()) return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                syncToCloud(context.applicationContext)
+            } catch (_: Exception) {}
         }
     }
 

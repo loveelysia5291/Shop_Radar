@@ -52,7 +52,7 @@ export default {
         return handleAdminDashboardHtml(request, env);
       }
 
-      // 3. 管理員登入 (支援首次初始化與自訂管理員登入，停用預設 ADMIN)
+      // 3. 管理員登入 (支援多管理員獨立登入，停用預設 ADMIN)
       if (path === "/api/admin/login" && request.method === "POST") {
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         if (!(await checkAdminRateLimit(env, clientIp))) {
@@ -67,22 +67,24 @@ export default {
           return jsonResponse({ success: false, message: "請輸入管理員帳號與密碼" }, 400);
         }
 
-        const adminAuth = await getOrInitAdminAuth(env);
+        const adminsList = await getAllAdmins(env);
+        const legacyAuth = await getOrInitAdminAuth(env);
+        const isSystemInitialized = adminsList.length > 0 || legacyAuth.adminDisabled;
 
         // 若輸入預設 ADMIN 帳號
         if (inputUsername.toUpperCase() === "ADMIN") {
           // 若已初始化並停用 ADMIN
-          if (adminAuth.adminDisabled) {
+          if (isSystemInitialized) {
             return jsonResponse({
               success: false,
-              message: "安全原則：預設 ADMIN 帳號已永久停用！請使用您設定的自訂管理員名稱登入。"
+              message: "安全原則：預設 ADMIN 帳號已永久停用！請使用您設定的專屬管理員帳號登入。"
             }, 403);
           }
 
           // 尚未初始化：驗證預設密碼 00000000
-          const { hash } = await hashPassword(password, adminAuth.salt);
-          if (!timingSafeEqual(hash, adminAuth.hash)) {
-            return jsonResponse({ success: false, message: "管理員密碼錯誤" }, 401);
+          const { hash } = await hashPassword(password, legacyAuth.salt);
+          if (!timingSafeEqual(hash, legacyAuth.hash)) {
+            return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401);
           }
 
           await clearAdminRateLimit(env, clientIp);
@@ -97,24 +99,29 @@ export default {
           });
         }
 
-        // 以自訂管理員名稱登入
-        if (inputUsername.toLowerCase() !== adminAuth.username.toLowerCase()) {
-          return jsonResponse({ success: false, message: "管理員帳號錯誤" }, 401);
+        // 以自訂管理員名稱登入 (支援多管理員)
+        const adminData = await findAdminUser(env, inputUsername);
+        if (!adminData) {
+          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401);
         }
 
-        const { hash } = await hashPassword(password, adminAuth.salt);
-        if (!timingSafeEqual(hash, adminAuth.hash)) {
-          return jsonResponse({ success: false, message: "管理員密碼錯誤" }, 401);
+        const { hash } = await hashPassword(password, adminData.salt);
+        if (!timingSafeEqual(hash, adminData.hash)) {
+          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401);
         }
 
         await clearAdminRateLimit(env, clientIp);
         const adminToken = "adm_" + crypto.randomUUID();
-        await kvPut(env, `admin_token:${adminToken}`, "active", 86400); // 24小時有效
+        await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
+          status: "active",
+          username: adminData.username
+        }), 86400); // 24小時有效
+
         return jsonResponse({
           success: true,
           mustChangePassword: false,
           token: adminToken,
-          username: adminAuth.username
+          username: adminData.username
         });
       }
 
@@ -125,6 +132,7 @@ export default {
 
         let isAuthorized = false;
         let isFirstSetup = false;
+        let authAdminName = null;
         if (tempToken) {
           const state = await kvGet(env, `admin_temp:${tempToken}`);
           if (state === "require_change") {
@@ -133,6 +141,7 @@ export default {
           }
         } else if (adminToken) {
           isAuthorized = await verifyAdminToken(adminToken, env);
+          authAdminName = await getAdminUsernameFromToken(adminToken, env);
         }
 
         if (!isAuthorized) {
@@ -157,11 +166,36 @@ export default {
           return jsonResponse({ success: false, message: "新密碼不能繼續使用預設的 00000000！" }, 400);
         }
 
-        const adminAuth = await getOrInitAdminAuth(env);
-        const finalUname = cleanUname || adminAuth.username;
+        const legacyAuth = await getOrInitAdminAuth(env);
+        const finalUname = cleanUname || authAdminName || legacyAuth.username;
 
         // 使用 PBKDF2 重新隨機加鹽雜湊
         const { hash, salt } = await hashPassword(newPassword);
+
+        // 儲存至 admin_user
+        const adminObj = {
+          username: finalUname,
+          hash,
+          salt,
+          createdAt: Date.now(),
+          createdBy: isFirstSetup ? "init" : (authAdminName || "system")
+        };
+        await kvPut(env, `admin_user:${finalUname.toLowerCase()}`, JSON.stringify(adminObj));
+
+        // 若改名，移除舊使用者
+        if (authAdminName && authAdminName.toLowerCase() !== finalUname.toLowerCase()) {
+          await kvDelete(env, `admin_user:${authAdminName.toLowerCase()}`);
+        }
+
+        // 更新 system:admins 清單
+        const currentAdmins = await getAllAdmins(env);
+        const filtered = currentAdmins.filter(a => a.toLowerCase() !== (authAdminName || "").toLowerCase());
+        if (!filtered.some(a => a.toLowerCase() === finalUname.toLowerCase())) {
+          filtered.push(finalUname);
+        }
+        await kvPut(env, "system:admins", JSON.stringify(filtered));
+
+        // 更新 legacy system:admin_auth
         const updatedAuth = {
           username: finalUname,
           hash,
@@ -175,13 +209,181 @@ export default {
         // 註銷臨時權杖並簽發正式 Token
         if (tempToken) await kvDelete(env, `admin_temp:${tempToken}`);
         const finalToken = "adm_" + crypto.randomUUID();
-        await kvPut(env, `admin_token:${finalToken}`, "active", 86400);
+        await kvPut(env, `admin_token:${finalToken}`, JSON.stringify({
+          status: "active",
+          username: finalUname
+        }), 86400);
 
         return jsonResponse({
           success: true,
           message: `專屬管理員帳號 [${finalUname}] 設定成功！預設 ADMIN 帳號已永久停用。`,
           token: finalToken,
           username: finalUname
+        });
+      }
+
+      // 管理員清單查詢 (多管理員功能)
+      if (path === "/api/admin/admins" && request.method === "GET") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const adminNames = await getAllAdmins(env);
+        const admins = [];
+        for (const name of adminNames) {
+          const userObj = await findAdminUser(env, name);
+          admins.push({
+            username: name,
+            createdAt: userObj?.createdAt || 0,
+            createdBy: userObj?.createdBy || "system"
+          });
+        }
+        return jsonResponse({ success: true, admins });
+      }
+
+      // 新增其他管理員 (多管理員功能)
+      if (path === "/api/admin/create-admin" && request.method === "POST") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const currentToken = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+        const authAdmin = (await getAdminUsernameFromToken(currentToken, env)) || "system";
+
+        const body = await request.json().catch(() => ({}));
+        const newU = (body.username || "").trim();
+        const newP = (body.password || "").trim();
+
+        if (!newU || newU.length < 3 || newU.length > 30) {
+          return jsonResponse({ success: false, message: "管理員帳號長度需介於 3 至 30 個字元" }, 400);
+        }
+        if (newU.toUpperCase() === "ADMIN") {
+          return jsonResponse({ success: false, message: "不能新增名稱為 ADMIN 的帳號" }, 400);
+        }
+        if (!newP || newP.length < 6) {
+          return jsonResponse({ success: false, message: "管理員密碼長度需至少 6 個字元" }, 400);
+        }
+        if (newP === "00000000") {
+          return jsonResponse({ success: false, message: "密碼不能使用 00000000" }, 400);
+        }
+
+        const existing = await findAdminUser(env, newU);
+        if (existing) {
+          return jsonResponse({ success: false, message: `管理員帳號 [${newU}] 已存在` }, 400);
+        }
+
+        const { hash, salt } = await hashPassword(newP);
+        const adminObj = {
+          username: newU,
+          hash,
+          salt,
+          createdAt: Date.now(),
+          createdBy: authAdmin
+        };
+        await kvPut(env, `admin_user:${newU.toLowerCase()}`, JSON.stringify(adminObj));
+
+        const admins = await getAllAdmins(env);
+        if (!admins.some(a => a.toLowerCase() === newU.toLowerCase())) {
+          admins.push(newU);
+        }
+        await kvPut(env, "system:admins", JSON.stringify(admins));
+
+        return jsonResponse({
+          success: true,
+          message: `已成功新增管理員帳號 [${newU}]！`
+        });
+      }
+
+      // 刪除管理員 (多管理員功能)
+      if (path === "/api/admin/delete-admin" && request.method === "POST") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const currentToken = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+        const currentAdmin = await getAdminUsernameFromToken(currentToken, env);
+
+        const body = await request.json().catch(() => ({}));
+        const targetUsername = (body.username || "").trim();
+
+        if (!targetUsername) {
+          return jsonResponse({ success: false, message: "請指定要刪除的管理員帳號" }, 400);
+        }
+        if (currentAdmin && targetUsername.toLowerCase() === currentAdmin.toLowerCase()) {
+          return jsonResponse({ success: false, message: "安全保護：不能刪除當前登入中的自己！" }, 400);
+        }
+
+        const admins = await getAllAdmins(env);
+        if (admins.length <= 1) {
+          return jsonResponse({ success: false, message: "系統必須保留至少一位管理員，無法刪除！" }, 400);
+        }
+
+        const filtered = admins.filter(a => a.toLowerCase() !== targetUsername.toLowerCase());
+        await kvPut(env, "system:admins", JSON.stringify(filtered));
+        await kvDelete(env, `admin_user:${targetUsername.toLowerCase()}`);
+
+        return jsonResponse({
+          success: true,
+          message: `管理員 [${targetUsername}] 已成功刪除`
+        });
+      }
+
+      // 後台 API：測試推送給選取設備
+      if (path === "/api/admin/test-push-devices" && request.method === "POST") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const body = await request.json().catch(() => ({}));
+        const { usernames, title, body: pushBody } = body;
+
+        if (!Array.isArray(usernames) || usernames.length === 0) {
+          return jsonResponse({ success: false, message: "請至少勾選一台設備" }, 400);
+        }
+
+        const msgTitle = title || "🎉 購物雷達測試推播！";
+        const msgBody = pushBody || "來自雲端管理後台的推播測試，您的裝置連線與推播運作正常！";
+
+        let sentCount = 0;
+        let attemptedCount = 0;
+        let lastError = null;
+
+        for (const u of usernames) {
+          const raw = await kvGet(env, `user:${u}`);
+          if (raw) {
+            try {
+              const userObj = JSON.parse(raw);
+              if (userObj.fcmToken) {
+                attemptedCount++;
+                const res = await sendFcmNotification(env, userObj.fcmToken, {
+                  title: msgTitle,
+                  body: msgBody
+                }, { type: "admin_test_push", timestamp: Date.now().toString() });
+                if (res.success) {
+                  sentCount++;
+                } else {
+                  lastError = res.error;
+                }
+              }
+            } catch (_) {}
+          }
+        }
+
+        if (attemptedCount === 0) {
+          return jsonResponse({
+            success: false,
+            message: "選取的設備中尚無有效連線的 FCM Token，請在手機端登入 App 啟動推播服務。"
+          }, 400);
+        }
+
+        if (sentCount === 0) {
+          return jsonResponse({
+            success: false,
+            message: `推播發送失敗: ${lastError || "無法連線至 FCM"}`
+          }, 400);
+        }
+
+        return jsonResponse({
+          success: true,
+          sent_count: sentCount,
+          total_attempted: attemptedCount,
+          message: `已成功發送推播給 ${sentCount}/${attemptedCount} 台有效設備！`
         });
       }
 
@@ -724,7 +926,7 @@ export default {
       if (path === "/api/test-push" && request.method === "POST") {
         if (!user.fcmToken) return jsonResponse({ success: false, message: "尚未取得 FCM Device Token" }, 400);
 
-        const roleText = (user.role === "low") ? "低權限模式 (每小時巡查)" : "標準權限 (每30分鐘巡查)";
+        const roleText = (user.role === "low") ? "普通會員 (每小時巡查)" : "VIP 會員 (每30分鐘巡查)";
         const pushResult = await sendFcmNotification(env, user.fcmToken, {
           title: "🎉 購物雷達雲端推播測試成功！",
           body: `嗨 ${user.username}，您的手機已連線至 Cloudflare！當前狀態：${roleText}`
@@ -1116,6 +1318,49 @@ async function getOrInitAdminAuth(env) {
   return initial;
 }
 
+async function getAllAdmins(env) {
+  const rawList = await kvGet(env, "system:admins");
+  let admins = [];
+  if (rawList) {
+    try { admins = JSON.parse(rawList); } catch (_) {}
+  }
+  if (!Array.isArray(admins) || admins.length === 0) {
+    // 舊版 system:admin_auth 自動移轉相容
+    const legacy = await getOrInitAdminAuth(env);
+    if (legacy && legacy.adminDisabled && legacy.username && legacy.username.toUpperCase() !== "ADMIN") {
+      admins = [legacy.username];
+      await kvPut(env, "system:admins", JSON.stringify(admins));
+      await kvPut(env, `admin_user:${legacy.username.toLowerCase()}`, JSON.stringify({
+        username: legacy.username,
+        hash: legacy.hash,
+        salt: legacy.salt,
+        createdAt: legacy.updatedAt || Date.now(),
+        createdBy: "system"
+      }));
+    }
+  }
+  return Array.isArray(admins) ? admins : [];
+}
+
+async function findAdminUser(env, username) {
+  const clean = (username || "").trim().toLowerCase();
+  const raw = await kvGet(env, `admin_user:${clean}`);
+  if (raw) {
+    try { return JSON.parse(raw); } catch (_) {}
+  }
+  const legacy = await getOrInitAdminAuth(env);
+  if (legacy && legacy.username && legacy.username.toLowerCase() === clean) {
+    return {
+      username: legacy.username,
+      hash: legacy.hash,
+      salt: legacy.salt,
+      createdAt: legacy.updatedAt || Date.now(),
+      createdBy: "system"
+    };
+  }
+  return null;
+}
+
 async function hashPassword(password, saltHex = null) {
   const salt = saltHex ? hexToBytes(saltHex) : crypto.getRandomValues(new Uint8Array(16));
   const passKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), { name: "PBKDF2" }, false, ["deriveBits"]);
@@ -1248,7 +1493,30 @@ async function verifyAdmin(request, env) {
 async function verifyAdminToken(token, env) {
   if (!token) return false;
   const status = await kvGet(env, `admin_token:${token}`);
-  return status === "active";
+  if (!status) return false;
+  if (status === "active") return true;
+  try {
+    const data = JSON.parse(status);
+    return data.status === "active";
+  } catch (_) {
+    return false;
+  }
+}
+
+async function getAdminUsernameFromToken(token, env) {
+  if (!token) return null;
+  const status = await kvGet(env, `admin_token:${token}`);
+  if (!status) return null;
+  if (status === "active") {
+    const auth = await getOrInitAdminAuth(env);
+    return auth.username;
+  }
+  try {
+    const data = JSON.parse(status);
+    return data.username || null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function escapeHtml(str) {
@@ -1295,9 +1563,9 @@ function handleAdminDashboardHtml(request, env) {
     <!-- 登入卡片 -->
     <div id="loginSection" class="card" style="max-width: 420px; margin: 80px auto;">
       <h2 style="margin-bottom: 16px; text-align: center; color: var(--primary);">🛡️ 購物雷達管理員登入</h2>
-      <p style="color: #94a3b8; font-size: 12px; margin-bottom: 16px; text-align: center;">預設帳號 ADMIN (首次需初始化)，或輸入您設定的專屬管理員帳號</p>
-      <input type="text" id="adminUser" class="input" placeholder="管理員帳號 (預設 ADMIN)" value="ADMIN" />
-      <input type="password" id="adminPass" class="input" placeholder="管理員密碼 (預設 00000000)" value="00000000" />
+      <p style="color: #94a3b8; font-size: 13px; margin-bottom: 16px; text-align: center;">請輸入管理員帳號與密碼登入管理後台</p>
+      <input type="text" id="adminUser" class="input" placeholder="管理員帳號" value="" autocomplete="username" />
+      <input type="password" id="adminPass" class="input" placeholder="管理員密碼" value="" autocomplete="current-password" />
       <button class="btn" style="width: 100%; padding: 12px;" onclick="doAdminLogin()">登入管理後台</button>
       <p id="loginErr" style="color: var(--err); font-size: 12px; margin-top: 10px; text-align: center; display: none;"></p>
     </div>
@@ -1310,7 +1578,7 @@ function handleAdminDashboardHtml(request, env) {
           <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">ADMIN</strong></p>
         </div>
         <div>
-          <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal(false)">修改帳號密碼</button>
+          <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal(false)">修改個人密碼</button>
           <button class="btn" style="background:#475569; color:#fff;" onclick="logoutAdmin()">登出</button>
         </div>
       </div>
@@ -1318,8 +1586,8 @@ function handleAdminDashboardHtml(request, env) {
       <div class="stats-grid">
         <div class="stat-box"><div class="stat-val" id="totalDevices">0</div><div style="font-size:12px;color:#94a3b8;">註冊手機總數</div></div>
         <div class="stat-box"><div class="stat-val" id="activeFcm">0</div><div style="font-size:12px;color:#94a3b8;">有效 FCM 推播裝置</div></div>
-        <div class="stat-box"><div class="stat-val" id="stdUsers">0</div><div style="font-size:12px;color:#94a3b8;">標準權限 (30分巡查)</div></div>
-        <div class="stat-box"><div class="stat-val" id="lowUsers">0</div><div style="font-size:12px;color:#94a3b8;">低權限模式 (60分巡查)</div></div>
+        <div class="stat-box"><div class="stat-val" id="stdUsers">0</div><div style="font-size:12px;color:#94a3b8;">VIP 會員 (30分巡查)</div></div>
+        <div class="stat-box"><div class="stat-val" id="lowUsers">0</div><div style="font-size:12px;color:#94a3b8;">普通會員 (60分巡查)</div></div>
       </div>
 
       <!-- FCM HTTP v1 雲端推播憑證設定卡片 -->
@@ -1372,16 +1640,54 @@ function handleAdminDashboardHtml(request, env) {
         </div>
       </div>
 
+      <!-- 裝置與會員權限管理卡片 -->
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h3>📱 裝置與權限分級管理</h3>
-          <button class="btn" style="background:#334155; color:#fff;" onclick="loadDevices()">重新整理</button>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <h3>📱 裝置與會員權限管理</h3>
+            <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">可勾選特定裝置發送推播測試，或切換 VIP / 普通會員巡查頻率</p>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn" style="background:#0284c7; color:#fff;" onclick="pushToSelectedDevices()">🎯 測試推送給勾選設備</button>
+            <button class="btn" style="background:#334155; color:#fff;" onclick="loadDevices()">🔄 重新整理</button>
+          </div>
         </div>
         <table>
           <thead>
-            <tr><th>帳號名稱</th><th>電子信箱</th><th>目前巡查頻率</th><th>FCM 推播狀態</th><th>操作</th></tr>
+            <tr>
+              <th style="width: 36px;"><input type="checkbox" id="selectAllDevices" onchange="toggleSelectAllDevices(this)" title="全選/取消全選" /></th>
+              <th>帳號名稱</th><th>電子信箱</th><th>會員等級 (巡查頻率)</th><th>FCM 推播狀態</th><th>操作</th>
+            </tr>
           </thead>
           <tbody id="deviceTableBody"></tbody>
+        </table>
+      </div>
+
+      <!-- 多管理員管理卡片 -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <h3 style="color: var(--primary);">👥 管理員帳號管理 (支援多管理員)</h3>
+            <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">各管理員可獨立登入，協同管理推播系統</p>
+          </div>
+          <button class="btn" style="background:#334155; color:#fff;" onclick="loadAdmins()">🔄 重新整理</button>
+        </div>
+
+        <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 12px; margin-bottom: 14px; border: 1px solid #334155;">
+          <h4 style="font-size: 13px; color: #f1f5f9; margin-bottom: 8px;">➕ 新增管理員帳號</h4>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <input type="text" id="newAdminUname" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員帳號 (至少3碼)" />
+            <input type="password" id="newAdminPword" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員密碼 (至少6碼)" />
+            <button class="btn" style="height: 40px; white-space: nowrap;" onclick="doCreateAdmin()">新增管理員</button>
+          </div>
+          <p id="createAdminMsg" style="font-size: 12px; margin-top: 8px; display: none;"></p>
+        </div>
+
+        <table>
+          <thead>
+            <tr><th>管理員帳號</th><th>建立時間</th><th>建立者</th><th>操作</th></tr>
+          </thead>
+          <tbody id="adminsTableBody"></tbody>
         </table>
       </div>
     </div>
@@ -1548,7 +1854,26 @@ function handleAdminDashboardHtml(request, env) {
       }
     }
 
+    let idleTimer = null;
+    const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 分鐘無操作自動登出
+
+    function resetIdleTimer() {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (!adminToken) return;
+      idleTimer = setTimeout(() => {
+        if (adminToken) {
+          alert("⏰ 您已超過 5 分鐘無任何操作，為維護後台安全，系統已自動為您登出。");
+          logoutAdmin();
+        }
+      }, IDLE_LIMIT_MS);
+    }
+
+    ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(evt => {
+      document.addEventListener(evt, resetIdleTimer, { passive: true });
+    });
+
     function logoutAdmin() {
+      if (idleTimer) clearTimeout(idleTimer);
       localStorage.removeItem("radar_admin_token");
       localStorage.removeItem("radar_admin_name");
       adminToken = null;
@@ -1563,6 +1888,8 @@ function handleAdminDashboardHtml(request, env) {
       document.getElementById("currentAdminName").innerText = localStorage.getItem("radar_admin_name") || "ADMIN";
       loadConfig();
       loadDevices();
+      loadAdmins();
+      resetIdleTimer();
     }
 
     function handleSaFileSelect(e) {
@@ -1679,6 +2006,11 @@ function handleAdminDashboardHtml(request, env) {
       }
     }
 
+    function toggleSelectAllDevices(master) {
+      const cbs = document.querySelectorAll(".device-select");
+      cbs.forEach(cb => { cb.checked = master.checked; });
+    }
+
     async function loadDevices() {
       const res = await fetch("/api/admin/devices", { headers: { "Authorization": "Bearer " + adminToken } });
       if (res.status === 401) return logoutAdmin();
@@ -1690,21 +2022,32 @@ function handleAdminDashboardHtml(request, env) {
       document.getElementById("stdUsers").innerText = devices.filter(d => d.role !== "low").length;
       document.getElementById("lowUsers").innerText = devices.filter(d => d.role === "low").length;
 
+      const master = document.getElementById("selectAllDevices");
+      if (master) master.checked = false;
+
       const tbody = document.getElementById("deviceTableBody");
       tbody.innerHTML = "";
+      if (devices.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#94a3b8; padding:20px;">尚無連線裝置</td></tr>';
+        return;
+      }
       devices.forEach(d => {
         const isLow = d.role === "low";
         const tr = document.createElement("tr");
         const safeUsername = escapeHtml(d.username);
         const safeEmail = escapeHtml(d.email || "-");
         tr.innerHTML = \`
+          <td><input type="checkbox" class="device-select" value="\${safeUsername}" data-fcm="\${d.has_fcm}" /></td>
           <td><strong>\${safeUsername}</strong></td>
           <td style="color:#94a3b8; font-size:13px;">\${safeEmail}</td>
-          <td><span class="badge \${isLow ? 'badge-60' : 'badge-30'}">\${isLow ? '60分鐘 (低權限)' : '30分鐘 (標準)'}</span></td>
+          <td><span class="badge \${isLow ? 'badge-60' : 'badge-30'}">\${isLow ? '普通會員 (60分鐘)' : 'VIP 會員 (30分鐘)'}</span></td>
           <td>\${d.has_fcm ? '<span style="color:#34d399;">● 已連線</span>' : '<span style="color:#94a3b8;">○ 未連線</span>'}</td>
           <td>
+            <button class="btn" style="background:#0284c7; color:#fff; padding:4px 10px; font-size:12px; margin-right:6px;" onclick="pushToSingleDevice('\${safeUsername}')">
+              測試推送
+            </button>
             <button class="btn" style="background:#334155; color:#fff; padding:4px 10px; font-size:12px;" onclick="toggleRole('\${safeUsername}', '\${isLow ? 'standard' : 'low'}')">
-              切換為 \${isLow ? '30分鐘' : '1小時'}
+              切換為 \${isLow ? 'VIP 會員' : '普通會員'}
             </button>
           </td>
         \`;
@@ -1734,6 +2077,142 @@ function handleAdminDashboardHtml(request, env) {
       });
       const data = await res.json();
       alert(data.message || (data.success ? "推播發送成功" : "發送失敗"));
+    }
+
+    async function pushToSelectedDevices() {
+      const checkedBoxes = document.querySelectorAll(".device-select:checked");
+      const unames = Array.from(checkedBoxes).map(cb => cb.value);
+      if (unames.length === 0) {
+        alert("請先勾選至少一台要測試推送的設備！");
+        return;
+      }
+      const msg = prompt("即將發送測試推播至勾選的 " + unames.length + " 台設備。\n\n請輸入推播內文 (留空使用預設內容)：", "來自管理後台的推播測試，您的裝置推播運作正常！");
+      if (msg === null) return;
+
+      try {
+        const res = await fetch("/api/admin/test-push-devices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          body: JSON.stringify({
+            usernames: unames,
+            title: "🎉 購物雷達測試推播！",
+            body: msg.trim() || "來自管理後台的推播測試，您的裝置推播運作正常！"
+          })
+        });
+        const data = await res.json();
+        alert(data.message || (data.success ? "推播發送成功！" : "發送失敗"));
+      } catch (e) {
+        alert("連線錯誤: " + e.message);
+      }
+    }
+
+    async function pushToSingleDevice(uname) {
+      try {
+        const res = await fetch("/api/admin/test-push-devices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          body: JSON.stringify({
+            usernames: [uname],
+            title: "🎉 購物雷達設備測試推播！",
+            body: "設備 [" + uname + "] 推播測試成功！連線正常。"
+          })
+        });
+        const data = await res.json();
+        alert(data.message || (data.success ? "推播發送成功！" : "發送失敗"));
+      } catch (e) {
+        alert("連線錯誤: " + e.message);
+      }
+    }
+
+    async function loadAdmins() {
+      try {
+        const res = await fetch("/api/admin/admins", { headers: { "Authorization": "Bearer " + adminToken } });
+        if (res.status === 401) return logoutAdmin();
+        const data = await res.json();
+        const admins = data.admins || [];
+        const currentAdmin = localStorage.getItem("radar_admin_name") || "";
+        const tbody = document.getElementById("adminsTableBody");
+        tbody.innerHTML = "";
+        if (admins.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#94a3b8; padding:16px;">尚無其他管理員</td></tr>';
+          return;
+        }
+        admins.forEach(a => {
+          const isSelf = a.username.toLowerCase() === currentAdmin.toLowerCase();
+          const tr = document.createElement("tr");
+          const safeName = escapeHtml(a.username);
+          const timeStr = a.createdAt ? new Date(a.createdAt).toLocaleString("zh-TW", { hour12: false }) : "-";
+          const actionBtn = isSelf
+            ? '<span style="color:#64748b; font-size:12px;">(本人)</span>'
+            : '<button class="btn" style="background:#ef4444; color:#fff; padding:4px 10px; font-size:12px;" onclick="doDeleteAdmin(\'' + safeName + '\')">刪除</button>';
+          tr.innerHTML = '<td><strong>' + safeName + '</strong> ' + (isSelf ? '<span class="badge badge-30" style="margin-left:6px;">目前登入</span>' : '') + '</td>' +
+            '<td style="color:#94a3b8; font-size:12px;">' + timeStr + '</td>' +
+            '<td style="color:#94a3b8; font-size:12px;">' + escapeHtml(a.createdBy || "system") + '</td>' +
+            '<td>' + actionBtn + '</td>';
+          tbody.appendChild(tr);
+        });
+      } catch (_) {}
+    }
+
+    async function doCreateAdmin() {
+      const u = document.getElementById("newAdminUname").value.trim();
+      const p = document.getElementById("newAdminPword").value.trim();
+      const msg = document.getElementById("createAdminMsg");
+      msg.style.display = "none";
+
+      if (!u || u.length < 3) {
+        msg.style.color = "var(--err)";
+        msg.innerText = "管理員帳號需至少 3 碼！";
+        msg.style.display = "block";
+        return;
+      }
+      if (!p || p.length < 6) {
+        msg.style.color = "var(--err)";
+        msg.innerText = "管理員密碼需至少 6 碼！";
+        msg.style.display = "block";
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/admin/create-admin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          body: JSON.stringify({ username: u, password: p })
+        });
+        const data = await res.json();
+        if (data.success) {
+          msg.style.color = "#34d399";
+          msg.innerText = "✅ " + data.message;
+          msg.style.display = "block";
+          document.getElementById("newAdminUname").value = "";
+          document.getElementById("newAdminPword").value = "";
+          loadAdmins();
+        } else {
+          msg.style.color = "var(--err)";
+          msg.innerText = "❌ " + (data.message || "建立失敗");
+          msg.style.display = "block";
+        }
+      } catch (e) {
+        msg.style.color = "var(--err)";
+        msg.innerText = "❌ 連線失敗: " + e.message;
+        msg.style.display = "block";
+      }
+    }
+
+    async function doDeleteAdmin(uname) {
+      if (!confirm("確定要刪除管理員 [" + uname + "] 嗎？刪除後該管理員將無法再登入。")) return;
+      try {
+        const res = await fetch("/api/admin/delete-admin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          body: JSON.stringify({ username: uname })
+        });
+        const data = await res.json();
+        alert(data.message || (data.success ? "管理員已刪除" : "刪除失敗"));
+        loadAdmins();
+      } catch (e) {
+        alert("連線錯誤: " + e.message);
+      }
     }
   </script>
 </body>
