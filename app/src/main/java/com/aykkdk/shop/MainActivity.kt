@@ -319,17 +319,18 @@ class MainActivity : ComponentActivity() {
             androidx.work.WorkManager.getInstance(this).cancelAllWork()
         }
         val account = AccountStore.get(this)
+        // 開啟 App 立即在背景確保裝置就緒連線 (零等待，即使未取得 FCM 亦立即連線報到)
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            account.ensureDeviceRegistered(this@MainActivity)
+            account.syncToCloud(this@MainActivity)
+        }
         FcmTokenManager.fetchToken(this) { token ->
             if (!token.isNullOrBlank()) {
                 account.saveFcmToken(token)
-            }
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                // 自動確保裝置就緒連線 (若未手動登入專屬帳號，自動以設備 ID 註冊就緒，開箱即用)
-                account.ensureDeviceRegistered(this@MainActivity)
-                if (!token.isNullOrBlank()) {
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                     account.uploadFcmToken(token)
+                    account.syncToCloud(this@MainActivity)
                 }
-                account.syncToCloud(this@MainActivity)
             }
         }
         // Register on the actual Activity dispatcher before composing any screen.
