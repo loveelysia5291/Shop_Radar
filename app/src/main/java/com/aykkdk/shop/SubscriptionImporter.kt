@@ -9,6 +9,9 @@ internal object SubscriptionImporter {
         val market = Market.fromPublicUrl(clean)
             ?: throw IllegalArgumentException("無法辨識平台，請貼上公開店家或商品網址。")
         val accountStore = AccountStore.get(context)
+        if (!accountStore.isLoggedIn()) {
+            throw IllegalArgumentException("請先登入專屬帳號以使用訂閱與追蹤功能。未登入僅可搜尋商品。")
+        }
         val isVip = accountStore.getRole() in setOf("standard", "vip", "admin")
 
         if (market.isPublicProductUrl(clean)) {

@@ -68,6 +68,7 @@ fun AboutScreen(
     var lastSyncTime by remember { mutableStateOf(accountStore.getLastSyncTime()) }
 
     var showAuthDialog by remember { mutableStateOf(false) }
+    var showLogoutConfirmDialog by remember { mutableStateOf(false) }
     var showDeployGuideDialog by remember { mutableStateOf(false) }
 
     val notificationsEnabled = remember { NotificationManagerCompat.from(context).areNotificationsEnabled() }
@@ -226,14 +227,7 @@ fun AboutScreen(
                             )
                             if (isLoggedIn) {
                                 TextButton(
-                                    onClick = {
-                                        accountStore.logout()
-                                        isLoggedIn = false
-                                        username = ""
-                                        email = ""
-                                        role = "standard"
-                                        Toast.makeText(context, "已登出帳號，雲端推播已暫停", Toast.LENGTH_SHORT).show()
-                                    }
+                                    onClick = { showLogoutConfirmDialog = true }
                                 ) {
                                     Text("登出帳號", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                                 }
@@ -295,19 +289,6 @@ fun AboutScreen(
                                 }
                             }
                         }
-
-                        Spacer(Modifier.height(10.dp))
-
-                        // 開啟雲端管理後台 (Web Admin) 按鈕
-                        OutlinedButton(
-                            onClick = { uriHandler.openUri("$serverUrl/admin") },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.AdminPanelSettings, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("開啟雲端管理後台 (Web Admin)", fontSize = 13.sp)
-                        }
                     }
                 }
             }
@@ -364,19 +345,45 @@ fun AboutScreen(
                 serverUrl = newUrl
                 role = newRole
                 showAuthDialog = false
-                Toast.makeText(context, "歡迎，$newUsername！已成功登入並啟動雲端推播", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "歡迎，$newUsername！正在從雲端同步還原商品...", Toast.LENGTH_SHORT).show()
                 scope.launch {
-                    val syncRes = accountStore.syncToCloud(context)
-                    syncRes.onSuccess { lastSyncTime = System.currentTimeMillis() }
+                    val restoreRes = accountStore.restoreFromCloud(context)
+                    restoreRes.onSuccess {
+                        Toast.makeText(context, "已成功同步並還原雲端訂閱與競標！", Toast.LENGTH_SHORT).show()
+                    }
+                    lastSyncTime = System.currentTimeMillis()
                 }
             }
         )
     }
 
-
-    // Cloudflare 架設說明 Dialog
-    if (showDeployGuideDialog) {
-        DeployGuideDialog(onDismiss = { showDeployGuideDialog = false })
+    if (showLogoutConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutConfirmDialog = false },
+            title = { Text("確認登出帳號？") },
+            text = { Text("確定要登出此帳號嗎？\n登出後將清除本機暫存的所有訂閱與競拍紀錄。下次登入專屬帳號時，將會從雲端自動同步恢復所有商品。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLogoutConfirmDialog = false
+                    ProductSubscriptionStore(context).clearAll()
+                    AuctionStore(context).clearAll()
+                    context.getSharedPreferences("shop_subscriptions_v2", Context.MODE_PRIVATE).edit().clear().apply()
+                    accountStore.logout()
+                    isLoggedIn = false
+                    username = ""
+                    email = ""
+                    role = "standard"
+                    Toast.makeText(context, "已登出帳號，本機訂閱與競拍紀錄已清除", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("確定登出", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirmDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 

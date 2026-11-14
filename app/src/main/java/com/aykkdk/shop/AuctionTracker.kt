@@ -64,6 +64,9 @@ class AuctionStore(private val context: Context) {
         }
         AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.AUCTION, url))
     }
+    fun clearAll() = synchronized(lock) {
+        save(emptyList())
+    }
     fun update(url: String, action: (JSONObject) -> Unit) = synchronized(lock) {
         val items = list()
         items.firstOrNull { it.optString("url") == url }?.let(action)

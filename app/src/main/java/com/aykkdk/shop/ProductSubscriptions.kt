@@ -78,6 +78,9 @@ class ProductSubscriptionStore(private val context: Context) {
         AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.PRODUCT, url))
         AccountStore.get(context).triggerCloudSync(context)
     }
+    fun clearAll() = synchronized(SubscriptionMutations.lock) {
+        prefs.edit().clear().apply()
+    }
     fun list(): List<JSONObject> = prefs.all.values.mapNotNull {
         runCatching { JSONObject(it as String).also { item ->
             if (item.optInt("stockEvidenceVersion") < 2) {
@@ -220,5 +223,55 @@ class ProductSubscriptionStore(private val context: Context) {
             } finally { connection.disconnect() }
         }
         error("跳轉次數過多")
+    }
+}
+
+object SubscriptionCleanupPolicy {
+    const val RETENTION_MILLIS = 7L * 24 * 60 * 60 * 1000 // 7 天找不到自動移除
+
+    fun cleanExpired(context: Context): Boolean {
+        var changed = false
+        val now = System.currentTimeMillis()
+        val prodStore = ProductSubscriptionStore(context)
+        prodStore.list().forEach { item ->
+            val url = item.optString("url")
+            val status = item.optString("status")
+            val error = item.optString("lastCheckError")
+            val isNotFound = status == "removed" || error.contains("404") || error.contains("找不到") || error.contains("下架") || error.contains("不存在")
+            val firstNotFound = item.optLong("firstNotFoundAt", 0L)
+            if (isNotFound) {
+                if (firstNotFound == 0L) {
+                    prodStore.prefs.edit().putString(url, item.put("firstNotFoundAt", now).toString()).apply()
+                } else if (now - firstNotFound >= RETENTION_MILLIS) {
+                    prodStore.remove(url)
+                    changed = true
+                }
+            } else if (firstNotFound > 0L) {
+                item.remove("firstNotFoundAt")
+                prodStore.prefs.edit().putString(url, item.toString()).apply()
+            }
+        }
+        val auctionStore = AuctionStore(context)
+        auctionStore.list().forEach { item ->
+            val url = item.optString("url")
+            val state = item.optString("state")
+            val error = item.optString("error")
+            val isNotFound = state == "cancelled" || state == "ended" || error.contains("404") || error.contains("找不到") || error.contains("下架")
+            val firstNotFound = item.optLong("firstNotFoundAt", 0L)
+            if (isNotFound) {
+                if (firstNotFound == 0L) {
+                    auctionStore.update(url) { it.put("firstNotFoundAt", now) }
+                } else if (now - firstNotFound >= RETENTION_MILLIS) {
+                    auctionStore.remove(url)
+                    changed = true
+                }
+            } else if (firstNotFound > 0L) {
+                auctionStore.update(url) { it.remove("firstNotFoundAt") }
+            }
+        }
+        if (changed) {
+            AccountStore.get(context).triggerCloudSync(context)
+        }
+        return changed
     }
 }

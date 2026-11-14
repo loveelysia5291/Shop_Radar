@@ -304,6 +304,12 @@ class MainActivity : ComponentActivity() {
     }
     private fun receiveShare(intent: Intent) {
         if (intent.action != Intent.ACTION_SEND || intent.type != "text/plain") return
+        if (!AccountStore.get(this).isLoggedIn()) {
+            shareError = "請先登入專屬帳號以使用訂閱功能。未登入僅可搜尋商品。"
+            intent.removeExtra(Intent.EXTRA_TEXT)
+            intent.action = Intent.ACTION_MAIN
+            return
+        }
         val link = SubscriptionShareInput.parse(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
         if (link == null) shareError = "請分享一個支援平台的 HTTPS 商品或店家連結。"
         else sharedSubscription = SharedSubscriptionRequest(java.util.UUID.randomUUID().toString(), link)
@@ -319,17 +325,20 @@ class MainActivity : ComponentActivity() {
             androidx.work.WorkManager.getInstance(this).cancelAllWork()
         }
         val account = AccountStore.get(this)
-        // 開啟 App 立即在背景確保裝置就緒連線 (零等待，即使未取得 FCM 亦立即連線報到)
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            account.ensureDeviceRegistered(this@MainActivity)
-            account.syncToCloud(this@MainActivity)
+        // 僅在使用者已主動登入專屬帳號時才向雲端同步，絕不主動為使用者註冊帳號
+        if (account.isLoggedIn()) {
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                account.syncToCloud(this@MainActivity)
+            }
         }
         FcmTokenManager.fetchToken(this) { token ->
             if (!token.isNullOrBlank()) {
                 account.saveFcmToken(token)
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                    account.uploadFcmToken(token)
-                    account.syncToCloud(this@MainActivity)
+                if (account.isLoggedIn()) {
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        account.uploadFcmToken(token)
+                        account.syncToCloud(this@MainActivity)
+                    }
                 }
             }
         }
@@ -666,6 +675,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     result.error?.let(errors::add)
                 }
                 if (subscriptionRefreshId == requestId) {
+                    SubscriptionCleanupPolicy.cleanExpired(context)
                     shopsVersion++
                     if (alerts.isNotEmpty()) startupSubscriptionNotice = alerts.distinctBy { it.shop + it.title }
                     if (errors.isNotEmpty()) warning = "${errors.size} 筆刷新未完成；已保留原有資料。\n${errors.distinct().take(3).joinToString("\n")}"
@@ -687,6 +697,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             val errors = mutableListOf<String>()
             try {
                 targets.forEach { target -> RefreshRunner.refresh(context, target).error?.let(errors::add) }
+                SubscriptionCleanupPolicy.cleanExpired(context)
                 if (errors.isNotEmpty()) warning = "${errors.size} 筆競標刷新未完成。\n${errors.distinct().take(3).joinToString("\n")}"
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { warning = "競標刷新未完成，已保留原有資料。" }
@@ -1712,6 +1723,10 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                 subscriptionHistoryShop = null
                 subscriptionProducts = previewShopProducts; productPageTitle = "${previewShopName} 的商品"; showSubscriptionProducts = true
             }, onSubscribe = {
+                if (!AccountStore.get(context).isLoggedIn()) {
+                    warning = "請先登入專屬帳號以使用訂閱與追蹤功能。未登入僅可搜尋商品。"
+                    return@ShopDetailsPage
+                }
                 runCatching {
                     synchronized(SubscriptionMutations.lock) {
                         require(!shopsPrefs.contains(previewShopUrl) && shopsPrefs.all.keys.none { SubscriptionIdentity.sameShop(it, previewShopUrl) }) {
@@ -1904,6 +1919,10 @@ private fun AuctionScreen(modifier: Modifier, foreground: Boolean, refreshing: B
             OutlinedTextField(url, { url = it }, label = { Text("Yahoo／露天競拍商品網址") }, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth(), singleLine = true)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
+                    if (!AccountStore.get(context).isLoggedIn()) {
+                        onWarning("請先登入專屬帳號以使用訂閱與追蹤功能。未登入僅可搜尋商品。")
+                        return@Button
+                    }
                     runCatching { store.add(AuctionParser.canonicalUrl(url)); url = "" }
                         .onFailure { onWarning(it.message ?: "網址無效。") }
                 }) { Text("訂閱競拍") }
@@ -1911,7 +1930,10 @@ private fun AuctionScreen(modifier: Modifier, foreground: Boolean, refreshing: B
             }
             }
         }
-        if (entries.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { Text("貼上競拍網址即可追蹤價格與倒數。") }
+        if (entries.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+            val loggedIn = AccountStore.get(context).isLoggedIn()
+            Text(if (loggedIn) "貼上競拍網址即可追蹤價格與倒數。" else "尚未登入帳號。請至「關於」登入帳號以啟用競拍追蹤（未登入僅可搜尋商品）。")
+        }
         items(entries, key = { it.getString("url") }) { entry ->
             val checked = entry.optLong("checkedAt")
             val end = entry.optLong("endsAt")
@@ -2374,6 +2396,10 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                 modifier = Modifier.fillMaxWidth())
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(enabled = url.isNotBlank() && !resolvingLink, onClick = {
+                    if (!AccountStore.get(context).isLoggedIn()) {
+                        onWarning("請先登入專屬帳號以使用訂閱與追蹤功能。未登入僅可搜尋商品。")
+                        return@Button
+                    }
                     importLink(url.trim())
                 }) { Text("新增訂閱") }
             }
@@ -2381,7 +2407,9 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
             }
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
-            SubscriptionSection("訂閱店家", "你目前沒添加任何店家，快去添加試試吧。".takeIf { shops.isEmpty() })
+            val loggedIn = AccountStore.get(context).isLoggedIn()
+            SubscriptionSection("訂閱店家", if (!loggedIn) "尚未登入帳號。請至「關於」登入帳號以啟用訂閱功能（未登入僅可搜尋商品）。"
+                else "你目前沒添加任何店家，快去添加試試吧。".takeIf { shops.isEmpty() })
         }
         items(shops, key = { it.getString("url") }) { shop ->
             val shopUrl = shop.getString("url")
@@ -2421,7 +2449,9 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
             } }
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
-            SubscriptionSection("商品訂閱", "你目前沒添加任何商品，快去添加試試吧。".takeIf { productSubscriptions.isEmpty() })
+            val loggedIn = AccountStore.get(context).isLoggedIn()
+            SubscriptionSection("商品訂閱", if (!loggedIn) "尚未登入帳號。請至「關於」登入帳號以啟用訂閱功能（未登入僅可搜尋商品）。"
+                else "你目前沒添加任何商品，快去添加試試吧。".takeIf { productSubscriptions.isEmpty() })
         }
         items(productSubscriptions, key = { "product:${it.getString("url")}" }) { item ->
                     val productUrl = item.getString("url")
@@ -2626,6 +2656,9 @@ private fun countdown(ms: Long): String {
 private fun subscribeListing(context: android.content.Context, product: Product): String =
     runCatching {
         val accountStore = AccountStore.get(context)
+        if (!accountStore.isLoggedIn()) {
+            return "請先登入專屬帳號以使用訂閱與追蹤功能。未登入僅可搜尋商品。"
+        }
         val role = accountStore.getRole()
         val isVip = role in setOf("standard", "vip", "admin")
 

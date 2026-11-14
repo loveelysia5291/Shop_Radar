@@ -37,6 +37,13 @@ data class ForgotPasswordResponse(
 class AccountStore private constructor(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("shop_radar_account_v1", Context.MODE_PRIVATE)
 
+    init {
+        // 若存在舊版自動註冊之裝置臨時帳號，立即清除，嚴格禁止 App 自行為使用者建立帳號
+        if (prefs.getString("username", "")?.startsWith("dev_") == true) {
+            prefs.edit().remove("username").remove("token").remove("user_role").apply()
+        }
+    }
+
     companion object {
         const val DEFAULT_SERVER_URL = "https://shop-radar-worker.adobeado909123.workers.dev"
 
@@ -52,7 +59,7 @@ class AccountStore private constructor(private val context: Context) {
     fun getUsername(): String = prefs.getString("username", "").orEmpty()
     fun getEmail(): String = prefs.getString("email", "").orEmpty()
     fun getToken(): String = prefs.getString("token", "").orEmpty()
-    fun isLoggedIn(): Boolean = getUsername().isNotBlank() && getToken().isNotBlank()
+    fun isLoggedIn(): Boolean = getUsername().isNotBlank() && !getUsername().startsWith("dev_") && getToken().isNotBlank()
     fun getRole(): String = prefs.getString("user_role", "standard").orEmpty()
     fun isVip(): Boolean {
         val r = getRole()
@@ -127,46 +134,88 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     /**
-     * 確保裝置已向雲端註冊連線 (若尚未登入專屬帳號，自動以設備 ID 註冊就緒，開箱即用)
+     * 從雲端還原此使用者的所有訂閱商品、店家與競拍項目 (登入後自動執行)
      */
-    suspend fun ensureDeviceRegistered(appContext: Context): Result<String> = withContext(Dispatchers.IO) {
-        if (isLoggedIn()) {
-            return@withContext Result.success("已登入專屬帳號 (${getUsername()})")
-        }
+    suspend fun restoreFromCloud(appContext: Context): Result<SyncResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val endpoint = getServerUrl().trimEnd('/')
-            val url = URL("$endpoint/api/device/auto-register")
+            if (!isLoggedIn()) throw Exception("未登入帳號")
+            val activeToken = getToken()
+            val url = URL("${getServerUrl()}/api/sync")
             val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Authorization", "Bearer $activeToken")
+            conn.connectTimeout = 12000
+            conn.readTimeout = 12000
 
-            val payload = JSONObject().apply {
-                put("device_id", getDeviceId())
-                put("fcm_token", getFcmToken())
-                put("device_name", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim())
-            }.toString()
-
-            conn.outputStream.use { it.write(payload.toByteArray()) }
             val status = conn.responseCode
             val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             conn.disconnect()
 
             val json = JSONObject(text.ifBlank { "{}" })
             if (json.optBoolean("success", false)) {
-                val token = json.optString("token")
-                val uname = json.optString("username", "dev_${getDeviceId().take(8)}")
-                val role = json.optString("role", "low")
+                val vault = json.optJSONObject("vault") ?: JSONObject()
+                val products = vault.optJSONArray("products") ?: JSONArray()
+                val stores = vault.optJSONArray("stores") ?: JSONArray()
+                val auctions = vault.optJSONArray("auctions") ?: JSONArray()
+
+                val prodStore = ProductSubscriptionStore(appContext)
+                for (i in 0 until products.length()) {
+                    val p = products.optJSONObject(i) ?: continue
+                    val pUrl = p.optString("url")
+                    if (pUrl.isNotBlank() && !prodStore.contains(pUrl)) {
+                        val product = Product(
+                            title = p.optString("title", "訂閱商品"),
+                            price = p.optLong("price", 0L),
+                            platform = p.optString("platform", Market.fromPublicProductUrl(pUrl)?.label.orEmpty()),
+                            url = pUrl,
+                            image = p.optString("image", ""),
+                            shop = p.optString("shop", "")
+                        )
+                        runCatching { prodStore.add(product) }
+                    }
+                }
+
+                val shopPrefs = appContext.getSharedPreferences("shop_subscriptions_v2", Context.MODE_PRIVATE)
+                for (i in 0 until stores.length()) {
+                    val s = stores.optJSONObject(i) ?: continue
+                    val sUrl = s.optString("url")
+                    if (sUrl.isNotBlank()) {
+                        val existing = shopPrefs.getString(sUrl, null)
+                        val item = if (existing != null) JSONObject(existing) else JSONObject()
+                        item.put("url", sUrl)
+                            .put("name", s.optString("name", s.optString("title", "訂閱賣場")))
+                            .put("platform", s.optString("platform", Market.fromSubscription("", sUrl)?.name ?: "SHOPEE"))
+                        shopPrefs.edit().putString(sUrl, item.toString()).apply()
+                    }
+                }
+
+                val auctionStore = AuctionStore(appContext)
+                for (i in 0 until auctions.length()) {
+                    val a = auctions.optJSONObject(i) ?: continue
+                    val aUrl = a.optString("url")
+                    if (aUrl.isNotBlank() && auctionStore.list().none { it.optString("url") == aUrl }) {
+                        runCatching {
+                            auctionStore.add(aUrl)
+                            if (a.has("title")) auctionStore.update(aUrl) { it.put("title", a.optString("title")) }
+                        }
+                    }
+                }
+
+                val role = json.optString("role", getRole())
                 prefs.edit()
-                    .putString("username", uname)
-                    .putString("token", token)
+                    .putLong("last_sync_time", System.currentTimeMillis())
                     .putString("user_role", role)
                     .apply()
-                "裝置連線就緒 ($uname)"
+
+                SyncResult(
+                    success = true,
+                    message = "雲端同步還原成功！",
+                    role = role,
+                    subscriptionCount = products.length() + stores.length(),
+                    auctionCount = auctions.length()
+                )
             } else {
-                throw Exception(json.optString("message", "裝置自動註冊失敗 ($status)"))
+                throw Exception(json.optString("message", "伺服器同步還原失敗 ($status)"))
             }
         }
     }
@@ -405,10 +454,9 @@ class AccountStore private constructor(private val context: Context) {
     suspend fun syncToCloud(appContext: Context): Result<SyncResult> = withContext(Dispatchers.IO) {
         runCatching {
             if (!isLoggedIn()) {
-                ensureDeviceRegistered(appContext).getOrThrow()
-            } else {
-                runCatching { fetchUserProfile() }
+                throw Exception("尚未登入專屬帳號，無法同步至雲端")
             }
+            runCatching { fetchUserProfile() }
             val activeToken = getToken()
 
             // 1. 商品訂閱項目
@@ -501,10 +549,9 @@ class AccountStore private constructor(private val context: Context) {
     fun triggerCloudSync(context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                if (!isLoggedIn()) {
-                    ensureDeviceRegistered(context.applicationContext)
+                if (isLoggedIn()) {
+                    syncToCloud(context.applicationContext)
                 }
-                syncToCloud(context.applicationContext)
             } catch (_: Exception) {}
         }
     }
