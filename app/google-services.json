@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "817868723090",
-    "project_id": "shop-rader",
-    "storage_bucket": "shop-rader.firebasestorage.app"
+    "project_number": "100000000000",
+    "project_id": "shop-radar-placeholder",
+    "storage_bucket": "shop-radar-placeholder.appspot.com"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:817868723090:android:69882a3a3e46c4700a674b",
+        "mobilesdk_app_id": "1:100000000000:android:0000000000000000000000",
         "android_client_info": {
           "package_name": "com.aykkdk.shop"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBvDf6TdDnEGV0UYriafm9x8NJ-bitz2tM"
+          "current_key": "AIzaSyDummyKeyForShopRadarClientFcm00"
         }
       ],
       "services": {

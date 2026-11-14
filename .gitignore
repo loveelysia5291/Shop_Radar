@@ -29,3 +29,28 @@ outputs/
 .codex-remote-attachments/
 work/
 
+# Keystores & Signing Keys
+*.jks
+*.keystore
+*.key
+*.p12
+*.pem
+*.der
+release.jks
+debug.keystore
+
+# Cloud & Service Account Credentials
+*service-account*.json
+*service_account*.json
+*firebase-adminsdk*.json
+serviceAccountKey.json
+google-services-local.json
+credentials.json
+client_secret*.json
+
+# Environment Variables & Secrets
+.env
+.env.*
+.dev.vars
+.wrangler/
+

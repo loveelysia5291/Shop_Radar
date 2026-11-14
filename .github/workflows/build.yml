@@ -44,6 +44,17 @@ jobs:
             echo "keystore_path=" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Prepare google-services.json from Secret
+        env:
+          GSERVICES_CONTENT: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GSERVICES_CONTENT" ]; then
+            printf '%s\n' "$GSERVICES_CONTENT" > app/google-services.json
+            echo "google-services.json has been securely injected from GitHub Secrets."
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON secret not found. Using repository default."
+          fi
+
       - name: Build Debug APK
         run: gradle :app:assembleDebug --stacktrace
 
