@@ -48,7 +48,7 @@ class ProductSubscriptionStore(private val context: Context) {
         }
         prefs.edit().putString(url, item.toString()).apply()
         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.PRODUCT, url))
-        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), 30)
+        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), AccountStore.get(context).getDefaultRefreshInterval())
         AccountStore.get(context).triggerCloudSync(context)
     }
     fun addPublicUrl(raw: String, initial: PublicProductSnapshot? = null): ProductSubscriptionAddResult = synchronized(SubscriptionMutations.lock) {
@@ -65,7 +65,7 @@ class ProductSubscriptionStore(private val context: Context) {
         initial?.let { ProductSubscriptionDecision.apply(item, it, System.currentTimeMillis()) }
         prefs.edit().putString(url, item.toString()).apply()
         if (initial == null) SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.PRODUCT, url))
-        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), 30)
+        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.PRODUCT, url), AccountStore.get(context).getDefaultRefreshInterval())
         AccountStore.get(context).triggerCloudSync(context)
         ProductSubscriptionAddResult(true, if (initial != null) "已訂閱商品，已完成首次讀取。"
             else "已訂閱商品，正在讀取名稱、價格與庫存。")
@@ -185,6 +185,7 @@ class ProductSubscriptionStore(private val context: Context) {
             if (retainAlerts && alert != null) BackgroundAlertJournal.append(latest, listOf(alert))
             if (!prefs.edit().putString(url, latest.toString()).commit()) return@synchronized null
             if (retainAlerts && alert != null) PendingAlertDelivery.enqueue(context)
+            AccountStore.get(context).triggerCloudSync(context)
             alert
         }
     }

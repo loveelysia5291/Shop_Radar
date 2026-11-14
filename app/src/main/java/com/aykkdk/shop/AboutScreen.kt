@@ -396,7 +396,7 @@ private fun AuthDialog(
     var inputPassword by remember { mutableStateOf("") }
 
     var inputServerUrl by remember { mutableStateOf(currentServerUrl) }
-    var selectedRole by remember { mutableStateOf("standard") } // "standard" (30分) 或 "low" (60分)
+    var selectedRole by remember { mutableStateOf("standard") } // "standard" (1小時) 或 "low" (1.5小時)
     var passwordVisible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -534,13 +534,13 @@ private fun AuthDialog(
                         FilterChip(
                             selected = selectedRole == "standard",
                             onClick = { selectedRole = "standard" },
-                            label = { Text("VIP 會員 (每30分鐘巡查)") },
+                            label = { Text("VIP 會員 (每 1 小時巡查)") },
                             modifier = Modifier.weight(1f)
                         )
                         FilterChip(
                             selected = selectedRole == "low",
                             onClick = { selectedRole = "low" },
-                            label = { Text("普通會員 (每1小時巡查)") },
+                            label = { Text("普通會員 (每 1.5 小時巡查)") },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -887,7 +887,7 @@ private fun DeployGuideDialog(onDismiss: () -> Unit) {
                         StepItem(
                             stepNumber = "3",
                             title = "設定定時觸發程序 (Cron Triggers)",
-                            description = "在 Worker 的「觸發程序 (Triggers)」中，新增 Cron 觸發程序並填入 */30 * * * *（VIP 會員每 30 分鐘自動巡查，普通會員每 60 分鐘巡查）。"
+                            description = "在 Worker 的「觸發程序 (Triggers)」中，新增 Cron 觸發程序並填入 */30 * * * *（系統排程每 30 分鐘自動執行：VIP 會員每 1 小時巡查，普通會員每 1.5 小時巡查）。"
                         )
                     }
 

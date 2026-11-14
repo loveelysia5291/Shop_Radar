@@ -76,7 +76,7 @@ internal fun AutomaticRefreshMenu(target: RefreshTarget, iconModifier: Modifier 
             DropdownMenuItem(text = { Text("自動刷新") }, leadingIcon = { Checkbox(plan != null, null) }, onClick = {
                 menu = false
                 if (plan == null) {
-                    val defaultInterval = if (target.kind == RefreshKind.AUCTION) 15 else 30
+                    val defaultInterval = if (target.kind == RefreshKind.AUCTION) 15 else AccountStore.get(context).getDefaultRefreshInterval()
                     store.configure(target, defaultInterval)
                     if (RefreshNotificationAccess.needsPermission(context)) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     else if (!RefreshNotificationAccess.enabled(context, RefreshNotificationAccess.channel(target))) permissionDenied = true

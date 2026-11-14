@@ -670,6 +670,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     shopsVersion++
                     if (alerts.isNotEmpty()) startupSubscriptionNotice = alerts.distinctBy { it.shop + it.title }
                     if (errors.isNotEmpty()) warning = "${errors.size} 筆刷新未完成；已保留原有資料。\n${errors.distinct().take(3).joinToString("\n")}"
+                    AccountStore.get(context).triggerCloudSync(context)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { if (subscriptionRefreshId == requestId) warning = "刷新未完成，已保留原有資料，請重試。" }
@@ -1727,7 +1728,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                         saved.put("checkedAt", System.currentTimeMillis()).put("newCount", 0)
                         shopsPrefs.edit().putString(previewShopUrl, saved.toString()).apply(); shopsVersion++
                         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.SHOP, previewShopUrl))
-                        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, previewShopUrl), 30)
+                        AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, previewShopUrl), AccountStore.get(context).getDefaultRefreshInterval())
                         AccountStore.get(context).triggerCloudSync(context)
                         if (RefreshNotificationAccess.needsPermission(context)) {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)

@@ -17,7 +17,7 @@ data class SyncResult(
     val success: Boolean,
     val message: String,
     val role: String = "standard",
-    val checkFrequency: String = "每 30 分鐘",
+    val checkFrequency: String = "每 1 小時",
     val subscriptionCount: Int = 0,
     val auctionCount: Int = 0,
     val logisticsCount: Int = 0
@@ -54,6 +54,11 @@ class AccountStore private constructor(private val context: Context) {
     fun getToken(): String = prefs.getString("token", "").orEmpty()
     fun isLoggedIn(): Boolean = getUsername().isNotBlank() && getToken().isNotBlank()
     fun getRole(): String = prefs.getString("user_role", "standard").orEmpty()
+    fun isVip(): Boolean {
+        val r = getRole()
+        return r == "standard" || r == "vip" || r == "admin"
+    }
+    fun getDefaultRefreshInterval(): Int = if (isVip()) 60 else 90
 
     fun getDeviceId(): String {
         var id = prefs.getString("device_id", "")
@@ -373,10 +378,36 @@ class AccountStore private constructor(private val context: Context) {
         }
     }
 
+    suspend fun fetchUserProfile(): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = getToken()
+            if (token.isBlank()) return@runCatching getRole()
+            val url = URL("${getServerUrl()}/api/user")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            val status = conn.responseCode
+            val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+            val json = JSONObject(text.ifBlank { "{}" })
+            if (json.optBoolean("success", false)) {
+                val newRole = json.optString("role", getRole())
+                prefs.edit().putString("user_role", newRole).apply()
+                newRole
+            } else {
+                getRole()
+            }
+        }
+    }
+
     suspend fun syncToCloud(appContext: Context): Result<SyncResult> = withContext(Dispatchers.IO) {
         runCatching {
             if (!isLoggedIn()) {
                 ensureDeviceRegistered(appContext).getOrThrow()
+            } else {
+                runCatching { fetchUserProfile() }
             }
             val activeToken = getToken()
 
@@ -462,7 +493,7 @@ class AccountStore private constructor(private val context: Context) {
             if (json.optBoolean("success", false)) {
                 val now = System.currentTimeMillis()
                 val role = json.optString("role", getRole())
-                val freq = json.optString("check_frequency", if (role == "low") "每 60 分鐘" else "每 30 分鐘")
+                val freq = json.optString("check_frequency", if (role == "low") "每 1.5 小時" else "每 1 小時")
                 prefs.edit()
                     .putLong("last_sync_time", now)
                     .putString("user_role", role)
