@@ -21,6 +21,20 @@ const SECURITY_HEADERS = {
   "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload"
 };
 
+const ADMIN_SESSION_TTL_SEC = 300; // 5 分鐘 (300 秒) 限時 Token，5 分鐘無操作自動強制過期
+
+function getAdminSessionCookie(token, request) {
+  const isHttps = request ? request.url.startsWith("https:") : true;
+  const secureAttr = isHttps ? "Secure; " : "";
+  return `admin_session=${token}; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=${ADMIN_SESSION_TTL_SEC}`;
+}
+
+function getAdminClearCookie(request) {
+  const isHttps = request ? request.url.startsWith("https:") : true;
+  const secureAttr = isHttps ? "Secure; " : "";
+  return `admin_session=; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=0`;
+}
+
 function getHtmlHeaders(nonce) {
   return {
     "Content-Type": "text/html; charset=utf-8",
@@ -124,25 +138,32 @@ export default {
         });
       }
 
-      // 4. 視覺化管理員後台網頁 (身分感知：動態 Nonce CSP 隔離，未認證僅回傳純淨登入頁，認證通過才渲染儀表板)
+      // 4. 視覺化管理員後台網頁 (身分感知：動態 Nonce CSP 隔離，限時 5 分鐘 Token，未認證或過期自動登出)
       if (path === "/admin" || path === "/dashboard") {
         if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
           return methodNotAllowed(["GET", "HEAD", "OPTIONS"]);
         }
         const nonce = btoa(crypto.randomUUID());
         const token = await getAdminTokenFromRequest(request);
-        const isValid = await verifyAdminToken(token, env);
+        const isValid = await verifyAndRenewAdminToken(token, env);
         if (isValid) {
           const adminUsername = (await getAdminUsernameFromToken(token, env)) || "Admin";
+          const headers = getHtmlHeaders(nonce);
+          headers["Set-Cookie"] = getAdminSessionCookie(token, request);
           return new Response(renderAdminDashboardHtml(adminUsername, nonce), {
             status: 200,
-            headers: getHtmlHeaders(nonce)
+            headers
           });
         }
 
+        // 未登入或已超過 5 分鐘無操作 (Token 失效)，清除 Cookie 並呈現純淨登入頁
+        const headers = getHtmlHeaders(nonce);
+        if (token) {
+          headers["Set-Cookie"] = getAdminClearCookie(request);
+        }
         return new Response(renderAdminLoginHtml(nonce), {
           status: 200,
-          headers: getHtmlHeaders(nonce)
+          headers
         });
       }
 
@@ -219,11 +240,9 @@ export default {
         await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
           status: "active",
           username: uname
-        }), 86400);
+        }), ADMIN_SESSION_TTL_SEC);
 
-        const isHttps = request ? request.url.startsWith("https:") : true;
-        const secureAttr = isHttps ? "Secure; " : "";
-        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=86400`;
+        const cookie = getAdminSessionCookie(adminToken, request);
         return jsonResponse({
           success: true,
           token: adminToken,
@@ -324,11 +343,9 @@ export default {
           await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
             status: "active",
             username: inputUsername
-          }), 86400);
+          }), ADMIN_SESSION_TTL_SEC);
 
-          const isHttps = request ? request.url.startsWith("https:") : true;
-          const secureAttr = isHttps ? "Secure; " : "";
-          const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=86400`;
+          const cookie = getAdminSessionCookie(adminToken, request);
           return jsonResponse({
             success: true,
             token: adminToken,
@@ -366,11 +383,9 @@ export default {
         await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
           status: "active",
           username: adminData.username
-        }), 86400);
+        }), ADMIN_SESSION_TTL_SEC);
 
-        const isHttps = request ? request.url.startsWith("https:") : true;
-        const secureAttr = isHttps ? "Secure; " : "";
-        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=86400`;
+        const cookie = getAdminSessionCookie(adminToken, request);
         return jsonResponse({
           success: true,
           token: adminToken,
@@ -386,7 +401,7 @@ export default {
         if (token) {
           await kvDelete(env, `admin_token:${token}`);
         }
-        const clearCookie = `admin_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+        const clearCookie = getAdminClearCookie(request);
         return jsonResponse({ success: true, message: "已安全登出" }, 200, { "Set-Cookie": clearCookie }, request);
       }
 
@@ -472,9 +487,9 @@ export default {
         await kvPut(env, `admin_token:${finalToken}`, JSON.stringify({
           status: "active",
           username: finalUname
-        }), 86400);
+        }), ADMIN_SESSION_TTL_SEC);
 
-        const cookie = `admin_session=${finalToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`;
+        const cookie = getAdminSessionCookie(finalToken, request);
         return jsonResponse({
           success: true,
           message: `管理員帳號 [${finalUname}] 密碼修改成功！`,
@@ -2154,7 +2169,7 @@ async function getAdminTokenFromRequest(request) {
 
 async function verifyAdmin(request, env) {
   const token = await getAdminTokenFromRequest(request);
-  return await verifyAdminToken(token, env);
+  return await verifyAndRenewAdminToken(token, env);
 }
 
 async function verifyAdminToken(token, env) {
@@ -2168,6 +2183,33 @@ async function verifyAdminToken(token, env) {
   } catch (_) {
     return false;
   }
+}
+
+async function verifyAndRenewAdminToken(token, env) {
+  if (!token) return false;
+  const status = await kvGet(env, `admin_token:${token}`);
+  if (!status) return false;
+  let isValid = false;
+  let data = null;
+  if (status === "active") {
+    isValid = true;
+    data = { status: "active" };
+  } else {
+    try {
+      data = JSON.parse(status);
+      isValid = data.status === "active";
+    } catch (_) {
+      return false;
+    }
+  }
+  if (isValid) {
+    // 管理員活躍操作中：自動滑動續約 5 分鐘 (300 秒)，靜止 5 分鐘無操作則自動徹底失效銷毀
+    try {
+      await kvPut(env, `admin_token:${token}`, JSON.stringify(data), ADMIN_SESSION_TTL_SEC);
+    } catch (_) {}
+    return true;
+  }
+  return false;
 }
 
 async function getAdminUsernameFromToken(token, env) {
@@ -2486,18 +2528,49 @@ function renderAdminDashboardHtml(adminUsername, nonce) {
     }
 
     let idleTimer = null;
-    const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 分鐘無操作自動登出
+    let lastActiveTimestamp = Date.now();
+    const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 分鐘無操作強制登出
+
+    function handleIdleTimeout() {
+      if (idleTimer) clearTimeout(idleTimer);
+      alert("⏰ 您已超過 5 分鐘無任何操作，為維護後台安全，系統已自動為您強制登出。");
+      logoutAdmin();
+    }
 
     function resetIdleTimer() {
+      lastActiveTimestamp = Date.now();
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        alert("⏰ 您已超過 5 分鐘無任何操作，為維護後台安全，系統已自動為您登出。");
-        logoutAdmin();
-      }, IDLE_LIMIT_MS);
+      idleTimer = setTimeout(handleIdleTimeout, IDLE_LIMIT_MS);
     }
 
     ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(evt => {
       document.addEventListener(evt, resetIdleTimer, { passive: true });
+    });
+
+    // 視窗切換或喚醒時精確時間檢驗 (防背景降頻導致未能及時登出)
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        if (Date.now() - lastActiveTimestamp >= IDLE_LIMIT_MS) {
+          handleIdleTimeout();
+        } else {
+          resetIdleTimer();
+        }
+      }
+    });
+
+    window.addEventListener("focus", () => {
+      if (Date.now() - lastActiveTimestamp >= IDLE_LIMIT_MS) {
+        handleIdleTimeout();
+      } else {
+        resetIdleTimer();
+      }
+    });
+
+    // 關閉網頁視窗時嘗試立即銷毀伺服器 Session
+    window.addEventListener("pagehide", () => {
+      try {
+        navigator.sendBeacon("/api/admin/logout");
+      } catch (_) {}
     });
 
     async function logoutAdmin() {
