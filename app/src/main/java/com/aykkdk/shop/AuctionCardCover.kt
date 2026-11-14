@@ -12,7 +12,7 @@ import androidx.compose.ui.unit.dp
 /** Separate photo corners retain 48dp touch targets and compact, shape-aware feedback. */
 @Composable
 internal fun AuctionCardCover(target: RefreshTarget, reading: Boolean, onRefresh: () -> Unit,
-    extraMenu: @Composable (onDismiss: () -> Unit) -> Unit, image: @Composable (Modifier) -> Unit) {
+    extraMenu: @Composable (onDismiss: () -> Unit) -> Unit = {}, image: @Composable (Modifier) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val separateActions = maxWidth >= (2 * RadarLayoutPolicy.CARD_ACTION_SIZE).dp
         Box(if (separateActions) Modifier.fillMaxWidth().aspectRatio(1f)
@@ -23,10 +23,6 @@ internal fun AuctionCardCover(target: RefreshTarget, reading: Boolean, onRefresh
                     if (reading) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
                     else Icon(Icons.Default.Refresh, "刷新這件競拍", Modifier.size(14.dp))
                 }
-                if (!separateActions) AutomaticRefreshMenu(target, compactFeedback = true, extra = extraMenu)
-            }
-            if (separateActions) Box(Modifier.align(Alignment.TopEnd)) {
-                AutomaticRefreshMenu(target, compactFeedback = true, extra = extraMenu)
             }
         }
     }

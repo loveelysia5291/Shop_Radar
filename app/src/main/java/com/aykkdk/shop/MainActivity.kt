@@ -398,7 +398,6 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     var themeMode by remember { mutableStateOf(appearancePrefs.getString("mode", if (Build.VERSION.SDK_INT >= 28) "system" else "light") ?: "light") }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
-    var showBackgroundDeliverySettings by remember { mutableStateOf(false) }
     var showDebugNotificationTest by remember { mutableStateOf(false) }
     val dark = themeMode == "dark" || (themeMode == "system" && Build.VERSION.SDK_INT >= 28 && isSystemInDarkTheme())
     DisposableEffect(context, dark) {
@@ -1044,7 +1043,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         menu = false; searchHistoryExpanded = false; warning = null; captureDiagnostic = null; startupSubscriptionNotice = null
         yahooConsentRetry = null; showYahooConsent = false
         shopeeSearchRetry = null; shopeeRecoveryLaunching = false
-        showThemeDialog = false; showSleepDialog = false; showBackgroundDeliverySettings = false
+        showThemeDialog = false; showSleepDialog = false
         showBackgroundStatus = false; showUsernameDialog = false; showShopeeLogoutDialog = false
         deleteSearchHistory = null; clearSearchHistory = false
         showSearchResults = false; showShopDetails = false; showSubscriptionProducts = false
@@ -1138,16 +1137,21 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             pager.animateScrollToPage(1)
         }
     }
-    LaunchedEffect(Unit) {
-        withFrameNanos { }
-        delay(500)
-        withContext(Dispatchers.IO) { AutomaticRefreshScheduler.initialize(context) }
-        if (RefreshNotificationAccess.needsPermission(context)) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    var appOpenedCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(foreground) {
+        if (foreground) {
+            delay(500)
+            if (appOpenedCount == 0) {
+                withContext(Dispatchers.IO) { AutomaticRefreshScheduler.initialize(context) }
+                if (RefreshNotificationAccess.needsPermission(context)) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+            appOpenedCount++
+            // 開 APP 自動刷新商品訂閱與競標
+            refreshSubscriptions()
+            refreshAuctions()
         }
-        // 開 APP 自動刷新商品訂閱與競標
-        refreshSubscriptions()
-        refreshAuctions()
     }
     LaunchedEffect(dispatch, searchToken) {
         if (dispatch > 0 && queue.isNotEmpty()) {
@@ -1223,7 +1227,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     val rootBackEnabled = !showSearchResults && !showSubscriptionProducts && !showShopDetails && !showNewItemsPage &&
         !fetching && !subscriptionShopSearching &&
         warning == null && captureDiagnostic == null && !menu && !showThemeDialog && !showSleepDialog &&
-        !showBackgroundDeliverySettings && !showBackgroundStatus && !showUsernameDialog && !showShopeeLogoutDialog &&
+        !showBackgroundStatus && !showUsernameDialog && !showShopeeLogoutDialog &&
         !startupNoticeVisible && !searchHistoryExpanded && deleteSearchHistory == null && !clearSearchHistory && !showYahooConsent && shopeeSearchRetry == null
     // Leaving a root page, opening a modal/keyboard, or resuming never counts as the first back.
     LaunchedEffect(foreground, pager.targetPage, rootBackEnabled, imeVisible) {
@@ -1406,12 +1410,8 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     Icon(Icons.Default.MoreVert, "選單", Modifier.graphicsLayer { rotationZ = menuRotation })
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("清除歷史紀錄") }, onClick = {
-                        menu = false; clearSearchHistory = true
-                    })
                     DropdownMenuItem(text = { Text("外觀模式") }, onClick = { menu = false; showThemeDialog = true })
                     DropdownMenuItem(text = { Text("睡眠模式") }, onClick = { menu = false; showSleepDialog = true })
-                    DropdownMenuItem(text = { Text("背景通知設定") }, onClick = { menu = false; showBackgroundDeliverySettings = true })
                     DebugBackgroundRefreshMenu { menu = false; showBackgroundStatus = true }
                     DebugNotificationTestMenu { menu = false; showDebugNotificationTest = true }
                     DebugShopeeGuestMenu { menu = false }
@@ -1484,6 +1484,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                                 enabled = !fetching && foreground,
                                 expanded = searchHistoryExpanded, onExpandedChange = { if (it) ensureSearchHistoryLoaded(); searchHistoryExpanded = it },
                                 onRestore = { restoreSearchHistory(it) }, onDelete = { deleteSearchHistory = it })
+                            IconButton(onClick = { clearSearchHistory = true }, enabled = !fetching && foreground, modifier = Modifier.size(48.dp).padding(end = 4.dp)) {
+                                Icon(Icons.Default.Close, "清除歷史資料", Modifier.size(20.dp))
+                            }
                         } }
                     }
                     if (selected == Market.CAROUSELL.label) item {
@@ -1762,7 +1765,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         }
         ForegroundAuctions(foreground, dialogBusy = warning != null || captureDiagnostic != null ||
             fetching || subscriptionRefreshing || subscriptionShopSearching || auctionRefreshing || menu || showThemeDialog ||
-            showSleepDialog || showBackgroundDeliverySettings || showUsernameDialog || showShopeeLogoutDialog || startupSubscriptionNotice != null ||
+            showSleepDialog || showUsernameDialog || showShopeeLogoutDialog || startupSubscriptionNotice != null ||
             searchHistoryExpanded || deleteSearchHistory != null || clearSearchHistory || showYahooConsent || shopeeSearchRetry != null)
         SearchHistoryDeleteDialog(deleteSearchHistory, clearSearchHistory,
             onDismiss = { deleteSearchHistory = null; clearSearchHistory = false },
@@ -1793,7 +1796,6 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             dismissButton = { TextButton(enabled = !shopeeLoggingOut, onClick = { showShopeeLogoutDialog = false }) { Text("取消") } }
         )
         if (showSleepDialog) RefreshSleepDialog { showSleepDialog = false }
-        if (showBackgroundDeliverySettings) BackgroundDeliverySettingsDialog { showBackgroundDeliverySettings = false }
         if (showDebugNotificationTest) DebugNotificationTestDialog { showDebugNotificationTest = false }
         if (showBackgroundStatus) BackgroundRefreshDialog { showBackgroundStatus = false }
         if (showThemeDialog) AlertDialog(

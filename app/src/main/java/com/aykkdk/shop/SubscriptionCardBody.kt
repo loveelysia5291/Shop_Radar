@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextOverflow
@@ -16,16 +15,13 @@ import kotlinx.coroutines.delay
 
 /** All subscription cards reserve identical text slots, including the optional status. */
 @Composable
-internal fun SubscriptionCardHeading(eyebrow: String, title: String, menuButton: @Composable () -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-        Column(Modifier.weight(1f)) {
-            Text(eyebrow, style = MaterialTheme.typography.bodySmall,
-                minLines = 1, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(title, Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                style = MaterialTheme.typography.bodySmall,
-                minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
-        menuButton()
+internal fun SubscriptionCardHeading(eyebrow: String, title: String) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(eyebrow, style = MaterialTheme.typography.bodySmall,
+            minLines = 1, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(title, Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            style = MaterialTheme.typography.bodySmall,
+            minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -33,8 +29,7 @@ internal fun SubscriptionCardHeading(eyebrow: String, title: String, menuButton:
 internal fun SubscriptionCardBody(eyebrow: String, title: String, target: RefreshTarget,
     metadata: List<String>, status: String, onStatus: () -> Unit, actions: @Composable RowScope.() -> Unit) {
     Column(Modifier.padding(10.dp)) {
-        AutomaticRefreshMenu(target, compactFeedback = true, inCard = true,
-            header = { menuButton -> SubscriptionCardHeading(eyebrow, title, menuButton) })
+        SubscriptionCardHeading(eyebrow, title)
         repeat(metadata.size) { index ->
             Text(metadata.getOrNull(index).orEmpty(),
                 style = MaterialTheme.typography.bodySmall,
