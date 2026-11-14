@@ -445,21 +445,6 @@ class AccountStore private constructor(private val context: Context) {
                 })
             }
 
-            // 4. 物流包裹
-            val logisticsArray = JSONArray()
-            val logStore = LogisticsStore(appContext)
-            val parcels = logStore.loadAll()
-            parcels.forEach { l ->
-                logisticsArray.put(JSONObject().apply {
-                    put("carrier", l.carrier.id)
-                    put("trackingNumber", l.trackingNumber)
-                    put("note", l.note)
-                    put("latestStatus", l.latestStatus)
-                    put("isPickedUp", l.isPickedUp)
-                    put("storeName", l.storeName.orEmpty())
-                })
-            }
-
             // 合併相容 subscriptions
             val subsArray = JSONArray().apply {
                 for (i in 0 until prodsArray.length()) put(prodsArray.get(i))
@@ -471,7 +456,6 @@ class AccountStore private constructor(private val context: Context) {
                 put("stores", storesArray)
                 put("subscriptions", subsArray)
                 put("auctions", auctionsArray)
-                put("logistics", logisticsArray)
                 put("fcm_token", getFcmToken())
             }.toString()
 
@@ -506,7 +490,7 @@ class AccountStore private constructor(private val context: Context) {
                     checkFrequency = freq,
                     subscriptionCount = subsArray.length(),
                     auctionCount = auctionsArray.length(),
-                    logisticsCount = logisticsArray.length()
+                    logisticsCount = 0
                 )
             } else {
                 throw Exception(json.optString("message", "伺服器同步失敗 ($status)"))
