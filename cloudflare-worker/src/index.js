@@ -13,13 +13,26 @@
  */
 
 const SECURITY_HEADERS = {
-  "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';",
   "X-Frame-Options": "DENY",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
   "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload"
 };
+
+function getHtmlHeaders(nonce) {
+  return {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    "Content-Security-Policy": `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';`,
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload"
+  };
+}
 
 const HTML_SECURITY_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
@@ -34,6 +47,17 @@ const CORS_HEADERS = {
   "Vary": "Origin",
   ...SECURITY_HEADERS
 };
+
+function methodNotAllowed(allowedMethods) {
+  return new Response(JSON.stringify({ success: false, message: "Method Not Allowed" }), {
+    status: 405,
+    headers: {
+      "Content-Type": "application/json",
+      "Allow": allowedMethods.join(", "),
+      ...SECURITY_HEADERS
+    }
+  });
+}
 
 const memoryStore = new Map();
 
@@ -77,8 +101,20 @@ export default {
     }
 
     try {
-      // 3. 首頁健康檢查 (不洩露系統架構、版本號、KV狀態或管理員URL)
+      // 3. 首頁健康檢查 (明確限制僅允許 GET, HEAD, OPTIONS，不洩露系統架構、版本號、KV狀態或管理員URL)
       if (path === "/" || path === "/api/health") {
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+          return methodNotAllowed(["GET", "HEAD", "OPTIONS"]);
+        }
+        if (request.method === "HEAD") {
+          return new Response(null, {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              ...SECURITY_HEADERS
+            }
+          });
+        }
         return new Response(JSON.stringify({ status: "ok" }), {
           status: 200,
           headers: {
@@ -88,29 +124,31 @@ export default {
         });
       }
 
-      // 4. 視覺化管理員後台網頁 (身分感知：未認證僅回傳純淨登入頁，認證通過才渲染儀表板)
+      // 4. 視覺化管理員後台網頁 (身分感知：動態 Nonce CSP 隔離，未認證僅回傳純淨登入頁，認證通過才渲染儀表板)
       if (path === "/admin" || path === "/dashboard") {
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+          return methodNotAllowed(["GET", "HEAD", "OPTIONS"]);
+        }
+        const nonce = btoa(crypto.randomUUID());
         const token = await getAdminTokenFromRequest(request);
         const isValid = await verifyAdminToken(token, env);
         if (isValid) {
           const adminUsername = (await getAdminUsernameFromToken(token, env)) || "Admin";
-          return new Response(renderAdminDashboardHtml(adminUsername), {
+          return new Response(renderAdminDashboardHtml(adminUsername, nonce), {
             status: 200,
-            headers: HTML_SECURITY_HEADERS
+            headers: getHtmlHeaders(nonce)
           });
         }
 
-        const admins = await getAllAdmins(env);
-        const legacy = await getOrInitAdminAuth(env);
-        const isInitialized = admins.length > 0 || !!(legacy && legacy.adminDisabled);
-        return new Response(renderAdminLoginHtml(isInitialized), {
+        return new Response(renderAdminLoginHtml(nonce), {
           status: 200,
-          headers: HTML_SECURITY_HEADERS
+          headers: getHtmlHeaders(nonce)
         });
       }
 
-      // 5. 系統初次部署設定 (當且僅當系統尚未初始化時允許建立管理員)
-      if (path === "/api/admin/initial-setup" && request.method === "POST") {
+      // 5. 系統初次部署設定 (當且僅當系統尚未初始化時允許建立管理員，嚴格型別校驗)
+      if (path === "/api/admin/initial-setup") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         const rateStatus = await getAdminRateLimitStatus(env, clientIp);
         if (rateStatus.locked) {
@@ -124,26 +162,37 @@ export default {
         const legacy = await getOrInitAdminAuth(env);
         const isInitialized = admins.length > 0 || !!(legacy && legacy.adminDisabled);
         if (isInitialized) {
+          await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({
             success: false,
             message: "安全原則：系統已完成初始化，禁止重複進行初次設定！請直接登入。"
           }, 403, {}, request);
         }
 
-        const body = await request.json().catch(() => ({}));
-        const uname = (body.username || "").trim();
-        const pword = (body.password || "").trim();
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.username !== "string" || typeof body.password !== "string") {
+          await recordAdminLoginFailure(env, clientIp);
+          return jsonResponse({ success: false, message: "無效的請求參數格式，帳號與密碼必須為字串" }, 400, {}, request);
+        }
+
+        const uname = body.username.trim();
+        const pword = body.password.trim();
 
         if (!uname || uname.length < 3 || uname.length > 30) {
+          await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({ success: false, message: "管理員帳號需介於 3 至 30 個字元" }, 400, {}, request);
         }
         if (uname.toUpperCase() === "ADMIN") {
+          await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({ success: false, message: "基於安全原則，管理員帳號不能使用通用預設的 ADMIN！" }, 400, {}, request);
         }
         if (!pword || pword.length < 8) {
+          await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({ success: false, message: "為維護安全，管理員密碼長度需至少 8 碼！" }, 400, {}, request);
         }
         if (pword === "00000000") {
+          await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({ success: false, message: "不能使用預設弱密碼 00000000！" }, 400, {}, request);
         }
 
@@ -183,8 +232,9 @@ export default {
         }, 200, { "Set-Cookie": cookie }, request);
       }
 
-      // 6. 管理員登入 (多層速率限制防護：自第1、2次失敗起實作累進延遲，5次鎖定15分鐘，HttpOnly Session Cookie)
-      if (path === "/api/admin/login" && request.method === "POST") {
+      // 6. 管理員登入 (多層速率限制防護：型別防禦、首發嘗試延遲、5次鎖定15分鐘、HttpOnly Session Cookie)
+      if (path === "/api/admin/login") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         const rateStatus = await getAdminRateLimitStatus(env, clientIp);
         if (rateStatus.locked) {
@@ -199,11 +249,32 @@ export default {
           await new Promise(r => setTimeout(r, rateStatus.delayMs));
         }
 
-        const body = await request.json().catch(() => ({}));
-        const inputUsername = (body.username || "").trim();
-        const password = (body.password || "").trim();
+        let body = null;
+        try {
+          body = await request.json();
+        } catch (_) {
+          body = null;
+        }
+
+        // 嚴格型別校驗：若非物件、或 username/password 非字串，立即扣減速率限制額度並回傳 400，杜絕型別混淆與 500 繞過
+        if (
+          !body ||
+          typeof body !== "object" ||
+          typeof body.username !== "string" ||
+          typeof body.password !== "string"
+        ) {
+          await recordAdminLoginFailure(env, clientIp);
+          return jsonResponse({
+            success: false,
+            message: "請求參數格式無效，帳號與密碼必須為字串"
+          }, 400, {}, request);
+        }
+
+        const inputUsername = body.username.trim();
+        const password = body.password.trim();
 
         if (!inputUsername || !password) {
+          await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({ success: false, message: "請輸入管理員帳號與密碼" }, 400, {}, request);
         }
 
@@ -211,8 +282,63 @@ export default {
         const legacyAuth = await getOrInitAdminAuth(env);
         const isSystemInitialized = adminsList.length > 0 || !!(legacyAuth && legacyAuth.adminDisabled);
 
+        // 若系統尚未初始化，將第一次合規登入作為初次建立管理員
+        if (!isSystemInitialized) {
+          if (inputUsername.length < 3 || inputUsername.length > 30) {
+            await recordAdminLoginFailure(env, clientIp);
+            return jsonResponse({ success: false, message: "管理員帳號需介於 3 至 30 個字元" }, 400, {}, request);
+          }
+          if (inputUsername.toUpperCase() === "ADMIN") {
+            await recordAdminLoginFailure(env, clientIp);
+            return jsonResponse({ success: false, message: "基於安全原則，管理員帳號不能使用通用預設的 ADMIN！" }, 400, {}, request);
+          }
+          if (password.length < 8) {
+            await recordAdminLoginFailure(env, clientIp);
+            return jsonResponse({ success: false, message: "為維護安全，管理員密碼長度需至少 8 碼！" }, 400, {}, request);
+          }
+          if (password === "00000000") {
+            await recordAdminLoginFailure(env, clientIp);
+            return jsonResponse({ success: false, message: "不能使用預設弱密碼 00000000！" }, 400, {}, request);
+          }
+
+          const { hash, salt } = await hashPassword(password);
+          const adminObj = {
+            username: inputUsername,
+            hash,
+            salt,
+            createdAt: Date.now(),
+            createdBy: "init"
+          };
+          await kvPut(env, `admin_user:${inputUsername.toLowerCase()}`, JSON.stringify(adminObj));
+          await kvPut(env, "system:admins", JSON.stringify([inputUsername]));
+          await kvPut(env, "system:admin_auth", JSON.stringify({
+            username: inputUsername,
+            hash,
+            salt,
+            adminDisabled: true,
+            updatedAt: Date.now()
+          }));
+
+          await clearAdminLoginFailure(env, clientIp);
+          const adminToken = "adm_" + crypto.randomUUID();
+          await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
+            status: "active",
+            username: inputUsername
+          }), 86400);
+
+          const isHttps = request ? request.url.startsWith("https:") : true;
+          const secureAttr = isHttps ? "Secure; " : "";
+          const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=86400`;
+          return jsonResponse({
+            success: true,
+            token: adminToken,
+            message: `專屬管理員帳號 [${inputUsername}] 建立成功！`,
+            username: inputUsername
+          }, 200, { "Set-Cookie": cookie }, request);
+        }
+
         // 若輸入 ADMIN 且系統已初始化
-        if (inputUsername.toUpperCase() === "ADMIN" && isSystemInitialized) {
+        if (inputUsername.toUpperCase() === "ADMIN") {
           await recordAdminLoginFailure(env, clientIp);
           await new Promise(r => setTimeout(r, 600)); // 時序延遲
           return jsonResponse({
@@ -254,7 +380,8 @@ export default {
       }
 
       // 7. 管理員登出 (註銷 Token 並清除 HttpOnly Cookie)
-      if (path === "/api/admin/logout" && request.method === "POST") {
+      if (path === "/api/admin/logout") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const token = await getAdminTokenFromRequest(request);
         if (token) {
           await kvDelete(env, `admin_token:${token}`);
@@ -264,8 +391,18 @@ export default {
       }
 
       // 8. 修改管理員帳號與密碼 (需管理員權限，支援自訂名稱與密碼，更新 Session Cookie)
-      if (path === "/api/admin/change-password" && request.method === "POST") {
-        const body = await request.json().catch(() => ({}));
+      if (path === "/api/admin/change-password") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          (body.newUsername !== undefined && typeof body.newUsername !== "string") ||
+          typeof body.newPassword !== "string"
+        ) {
+          return jsonResponse({ success: false, message: "無效的參數格式" }, 400, {}, request);
+        }
         const { newUsername, newPassword } = body;
 
         const currentToken = await getAdminTokenFromRequest(request);
@@ -346,7 +483,8 @@ export default {
       }
 
       // 管理員清單查詢 (多管理員功能)
-      if (path === "/api/admin/admins" && request.method === "GET") {
+      if (path === "/api/admin/admins") {
+        if (request.method !== "GET") return methodNotAllowed(["GET", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
@@ -364,16 +502,21 @@ export default {
       }
 
       // 新增其他管理員 (多管理員功能)
-      if (path === "/api/admin/create-admin" && request.method === "POST") {
+      if (path === "/api/admin/create-admin") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
         const currentToken = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
         const authAdmin = (await getAdminUsernameFromToken(currentToken, env)) || "system";
 
-        const body = await request.json().catch(() => ({}));
-        const newU = (body.username || "").trim();
-        const newP = (body.password || "").trim();
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.username !== "string" || typeof body.password !== "string") {
+          return jsonResponse({ success: false, message: "參數格式不正確" }, 400);
+        }
+        const newU = body.username.trim();
+        const newP = body.password.trim();
 
         if (!newU || newU.length < 3 || newU.length > 30) {
           return jsonResponse({ success: false, message: "管理員帳號長度需介於 3 至 30 個字元" }, 400);
@@ -416,15 +559,20 @@ export default {
       }
 
       // 刪除管理員 (多管理員功能)
-      if (path === "/api/admin/delete-admin" && request.method === "POST") {
+      if (path === "/api/admin/delete-admin") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
         const currentToken = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
         const currentAdmin = await getAdminUsernameFromToken(currentToken, env);
 
-        const body = await request.json().catch(() => ({}));
-        const targetUsername = (body.username || "").trim();
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.username !== "string") {
+          return jsonResponse({ success: false, message: "請指定要刪除的管理員帳號" }, 400);
+        }
+        const targetUsername = body.username.trim();
 
         if (!targetUsername) {
           return jsonResponse({ success: false, message: "請指定要刪除的管理員帳號" }, 400);
@@ -449,14 +597,25 @@ export default {
       }
 
       // 後台 API：測試推送給選取設備
-      if (path === "/api/admin/test-push-devices" && request.method === "POST") {
+      if (path === "/api/admin/test-push-devices") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
-        const body = await request.json().catch(() => ({}));
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          !Array.isArray(body.usernames) ||
+          (body.title !== undefined && typeof body.title !== "string") ||
+          (body.body !== undefined && typeof body.body !== "string")
+        ) {
+          return jsonResponse({ success: false, message: "請至少勾選一台設備並提供合法參數" }, 400);
+        }
         const { usernames, title, body: pushBody } = body;
 
-        if (!Array.isArray(usernames) || usernames.length === 0) {
+        if (usernames.length === 0) {
           return jsonResponse({ success: false, message: "請至少勾選一台設備" }, 400);
         }
 
@@ -512,24 +671,29 @@ export default {
       }
 
       // 後台 API：設定 FCM HTTP v1 服務帳戶憑證 (Google Service Account JSON)
-      if (path === "/api/admin/set-fcm-service-account" && request.method === "POST") {
+      if (path === "/api/admin/set-fcm-service-account") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
-        const body = await request.json().catch(() => ({}));
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object") {
+          return jsonResponse({ success: false, message: "請提供有效的 Service Account JSON" }, 400);
+        }
         let sa = body.service_account;
         if (typeof sa === "string") {
           try { sa = JSON.parse(sa); } catch (e) {
             return jsonResponse({ success: false, message: "JSON 語法錯誤，請確認貼上的內容是否為正確的 JSON 格式" }, 400);
           }
         }
-        if (!sa || typeof sa !== "object") {
+        if (!sa || typeof sa !== "object" || Array.isArray(sa)) {
           return jsonResponse({ success: false, message: "請提供有效的 Service Account JSON" }, 400);
         }
 
-        const projectId = (sa.project_id || "").trim();
-        const clientEmail = (sa.client_email || "").trim();
-        const privateKey = (sa.private_key || "").trim();
+        const projectId = typeof sa.project_id === "string" ? sa.project_id.trim() : "";
+        const clientEmail = typeof sa.client_email === "string" ? sa.client_email.trim() : "";
+        const privateKey = typeof sa.private_key === "string" ? sa.private_key.trim() : "";
 
         if (!projectId || !clientEmail || !privateKey) {
           return jsonResponse({
@@ -560,7 +724,8 @@ export default {
       }
 
       // 後台 API：測試 FCM v1 OAuth 2.0 授權
-      if (path === "/api/admin/test-fcm-v1" && request.method === "POST") {
+      if (path === "/api/admin/test-fcm-v1") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
@@ -577,12 +742,17 @@ export default {
       }
 
       // 後台 API：設定 FCM Server Key (舊版相容選項)
-      if (path === "/api/admin/set-fcm-key" && request.method === "POST") {
+      if (path === "/api/admin/set-fcm-key") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
-        const body = await request.json().catch(() => ({}));
-        const key = (body.fcm_server_key || "").trim();
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.fcm_server_key !== "string") {
+          return jsonResponse({ success: false, message: "請輸入有效的 FCM 伺服器金鑰" }, 400);
+        }
+        const key = body.fcm_server_key.trim();
         if (!key) {
           return jsonResponse({ success: false, message: "請輸入有效的 FCM 伺服器金鑰" }, 400);
         }
@@ -591,7 +761,8 @@ export default {
       }
 
       // 後台 API：取得推播伺服器設定狀態 (支援 FCM v1 與舊版檢測)
-      if (path === "/api/admin/get-config" && request.method === "GET") {
+      if (path === "/api/admin/get-config") {
+        if (request.method !== "GET") return methodNotAllowed(["GET", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
@@ -617,7 +788,8 @@ export default {
       }
 
       // 5. 後台 API：裝置清單查詢 (需驗證正式管理權杖)
-      if (path === "/api/admin/devices" && request.method === "GET") {
+      if (path === "/api/admin/devices") {
+        if (request.method !== "GET") return methodNotAllowed(["GET", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權或必須先修改預設密碼" }, 401);
         }
@@ -657,11 +829,16 @@ export default {
       }
 
       // 6. 後台 API：切換權限 (standard: 30分 / low: 1小時)
-      if (path === "/api/admin/set-role" && request.method === "POST") {
+      if (path === "/api/admin/set-role") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
-        const body = await request.json().catch(() => ({}));
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.username !== "string" || typeof body.role !== "string") {
+          return jsonResponse({ success: false, message: "參數不正確" }, 400);
+        }
         const { username, role } = body;
         if (!username || !["standard", "low", "admin"].includes(role)) {
           return jsonResponse({ success: false, message: "參數不正確" }, 400);
@@ -676,11 +853,16 @@ export default {
       }
 
       // 6-2. 後台 API：拉黑 / 解除封鎖帳號
-      if (path === "/api/admin/toggle-block" && request.method === "POST") {
+      if (path === "/api/admin/toggle-block") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
-        const body = await request.json().catch(() => ({}));
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.username !== "string") {
+          return jsonResponse({ success: false, message: "缺少帳號參數" }, 400);
+        }
         const { username, block } = body;
         if (!username) {
           return jsonResponse({ success: false, message: "缺少帳號參數" }, 400);
@@ -700,13 +882,24 @@ export default {
       }
 
       // 7. 後台 API：廣播推播
-      if (path === "/api/admin/broadcast" && request.method === "POST") {
+      if (path === "/api/admin/broadcast") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
           return jsonResponse({ success: false, message: "未授權" }, 401);
         }
-        const body = await request.json().catch(() => ({}));
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          typeof body.title !== "string" ||
+          typeof body.body !== "string" ||
+          (body.target_username !== undefined && typeof body.target_username !== "string")
+        ) {
+          return jsonResponse({ success: false, message: "標題與內容不可為空且必須為字串" }, 400);
+        }
         const { title, body: pushBody, target_username } = body;
-        if (!title || !pushBody) {
+        if (!title.trim() || !pushBody.trim()) {
           return jsonResponse({ success: false, message: "標題與內容不可為空" }, 400);
         }
 
@@ -754,7 +947,8 @@ export default {
       }
 
       // 8. 人機驗證碼 (CAPTCHA) 生成 API (防止機器人濫發帳號)
-      if (path === "/api/auth/captcha" && request.method === "GET") {
+      if (path === "/api/auth/captcha") {
+        if (request.method !== "GET") return methodNotAllowed(["GET", "OPTIONS"]);
         const num1 = Math.floor(Math.random() * 80) + 12; // 12 ~ 91
         const num2 = Math.floor(Math.random() * 50) + 5;  // 5 ~ 54
         const ops = ["+", "-", "×"];
@@ -792,13 +986,25 @@ export default {
       }
 
       // 9. 使用者信箱註冊 (PBKDF2 10萬次加鹽加密)
-      if (path === "/api/auth/register" && request.method === "POST") {
+      if (path === "/api/auth/register") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         if (!(await recordAndCheckRateLimit(env, `reg:${clientIp}`))) {
           return jsonResponse({ success: false, message: "註冊頻率過高，已被安全限制 15 分鐘" }, 429);
         }
 
-        const body = await request.json().catch(() => ({}));
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          typeof body.email !== "string" ||
+          typeof body.username !== "string" ||
+          typeof body.password !== "string"
+        ) {
+          return jsonResponse({ success: false, message: "請輸入有效的電子信箱、帳號與密碼" }, 400);
+        }
+
         const { email, username, password, role } = body;
 
         // 1. 電子信箱驗證
@@ -866,14 +1072,31 @@ export default {
         });
       }
 
-      // 10. 使用者登入 (支援使用者名稱或信箱登入)
-      if (path === "/api/auth/login" && request.method === "POST") {
+      // 10. 使用者登入 (支援使用者名稱或信箱登入，嚴格型別校驗與防暴力破解)
+      if (path === "/api/auth/login") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
-        const body = await request.json().catch(() => ({}));
-        const accountInput = (body.username || body.account || "").trim();
-        const password = (body.password || "").trim();
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+
+        const usernameVal = body?.username ?? body?.account;
+        const passwordVal = body?.password;
+
+        if (
+          !body ||
+          typeof body !== "object" ||
+          typeof usernameVal !== "string" ||
+          typeof passwordVal !== "string"
+        ) {
+          await recordAndCheckRateLimit(env, `user:${clientIp}:invalid`);
+          return jsonResponse({ success: false, message: "請求參數格式無效，帳號與密碼必須為字串" }, 400);
+        }
+
+        const accountInput = usernameVal.trim();
+        const password = passwordVal.trim();
 
         if (!accountInput || !password) {
+          await recordAndCheckRateLimit(env, `user:${clientIp}:empty`);
           return jsonResponse({ success: false, message: "請輸入帳號 (或信箱) 與密碼" }, 400);
         }
 
@@ -936,13 +1159,18 @@ export default {
       }
 
       // 11. 忘記密碼：申請驗證碼 API (免人機驗證)
-      if (path === "/api/auth/forgot-password/request" && request.method === "POST") {
+      if (path === "/api/auth/forgot-password/request") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         if (!(await recordAndCheckRateLimit(env, `forgot:${clientIp}`))) {
           return jsonResponse({ success: false, message: "申請頻率過高，請 15 分鐘後再試" }, 429);
         }
 
-        const body = await request.json().catch(() => ({}));
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.email !== "string") {
+          return jsonResponse({ success: false, message: "請輸入註冊的電子信箱" }, 400);
+        }
         const { email } = body;
 
         const cleanEmail = (email || "").trim().toLowerCase();
@@ -972,8 +1200,19 @@ export default {
       }
 
       // 12. 忘記密碼：驗證並重設密碼 API
-      if (path === "/api/auth/forgot-password/reset" && request.method === "POST") {
-        const body = await request.json().catch(() => ({}));
+      if (path === "/api/auth/forgot-password/reset") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          typeof body.email !== "string" ||
+          typeof body.code !== "string" ||
+          typeof body.newPassword !== "string"
+        ) {
+          return jsonResponse({ success: false, message: "請輸入完整信箱、驗證碼與新密碼" }, 400);
+        }
         const { email, code, newPassword } = body;
 
         const cleanEmail = (email || "").trim().toLowerCase();
@@ -1016,7 +1255,8 @@ export default {
       }
 
       // 13. 訪客/舊版自動註冊阻擋 (強制要求登入帳號方可啟動推播服務)
-      if (path === "/api/device/auto-register" && request.method === "POST") {
+      if (path === "/api/device/auto-register") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         return jsonResponse({
           success: false,
           message: "為確保帳號安全與防濫用，僅限註冊並登入專屬帳號後方可啟用雲端推播與背景監控服務。請在 App 內註冊或登入。"
@@ -1031,20 +1271,29 @@ export default {
       }
 
       // 更新 FCM Token
-      if (path === "/api/device/token" && request.method === "POST") {
-        const body = await request.json().catch(() => ({}));
+      if (path === "/api/device/token") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object" || typeof body.fcm_token !== "string" || !body.fcm_token.trim()) {
+          return jsonResponse({ success: false, message: "fcm_token 不可為空" }, 400);
+        }
         const { fcm_token } = body;
-        if (!fcm_token) return jsonResponse({ success: false, message: "fcm_token 不可為空" }, 400);
 
-        user.fcmToken = fcm_token;
+        user.fcmToken = fcm_token.trim();
         user.fcmUpdatedAt = Date.now();
         await kvPut(env, `user:${user.username}`, JSON.stringify(user));
         return jsonResponse({ success: true, message: "FCM Token 已更新綁定" });
       }
 
       // 同步追蹤項目 (加上安全過濾，杜絕 SSRF，並落實免費版配額限制)
-      if (path === "/api/sync" && request.method === "POST") {
-        const body = await request.json().catch(() => ({}));
+      if (path === "/api/sync") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object") {
+          return jsonResponse({ success: false, message: "無效的同步請求資料" }, 400);
+        }
         let { subscriptions, stores, auctions, logistics, fcm_token } = body;
 
         let productList = [];
@@ -1100,7 +1349,7 @@ export default {
         user.stores = storeList;
         user.auctions = auctionList;
         if (Array.isArray(logistics)) user.logistics = logistics;
-        if (fcm_token) user.fcmToken = fcm_token;
+        if (typeof fcm_token === "string" && fcm_token.trim()) user.fcmToken = fcm_token.trim();
 
         user.lastSyncAt = Date.now();
         await kvPut(env, `user:${user.username}`, JSON.stringify(user));
@@ -1127,7 +1376,8 @@ export default {
       }
 
       // 使用者狀態資訊
-      if (path === "/api/user" && request.method === "GET") {
+      if (path === "/api/user") {
+        if (request.method !== "GET") return methodNotAllowed(["GET", "OPTIONS"]);
         return jsonResponse({
           success: true,
           username: user.username,
@@ -1144,7 +1394,8 @@ export default {
       }
 
       // 測試推播
-      if (path === "/api/test-push" && request.method === "POST") {
+      if (path === "/api/test-push") {
+        if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!user.fcmToken) return jsonResponse({ success: false, message: "尚未取得 FCM Device Token" }, 400);
 
         const roleText = (user.role === "low") ? "普通會員 (每小時巡查)" : "VIP 會員 (每30分鐘巡查)";
@@ -1701,12 +1952,19 @@ function jsonResponse(data, status = 200, extraHeaders = {}, request = null) {
     ...extraHeaders
   };
 
-  const allowedOrigin = origin || selfOrigin;
-  if (allowedOrigin) {
-    headers["Access-Control-Allow-Origin"] = allowedOrigin;
-    headers["Access-Control-Allow-Credentials"] = "true";
+  if (isAdm) {
+    if (origin && origin === selfOrigin) {
+      headers["Access-Control-Allow-Origin"] = selfOrigin;
+      headers["Access-Control-Allow-Credentials"] = "true";
+    }
   } else {
-    headers["Access-Control-Allow-Origin"] = "*";
+    const allowedOrigin = origin || selfOrigin;
+    if (allowedOrigin) {
+      headers["Access-Control-Allow-Origin"] = allowedOrigin;
+      headers["Access-Control-Allow-Credentials"] = "true";
+    } else {
+      headers["Access-Control-Allow-Origin"] = "*";
+    }
   }
 
   headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
@@ -1818,14 +2076,7 @@ function escapeHtml(str) {
 /**
  * 純淨管理員登入頁面 (未登入者僅回傳此頁面，不包含任何管理 API 路由或敏感邏輯)
  */
-function renderAdminLoginHtml(isInitialized) {
-  const init = !!isInitialized;
-  const promptText = init ? "請輸入管理員帳號與密碼" : "系統初次部署：請設定您的專屬管理員帳號與密碼";
-  const pwdPlaceholder = init ? "管理員密碼" : "請設定管理員密碼 (至少8碼)";
-  const confirmInput = init ? "" : '<input type="password" id="pword2" class="input" placeholder="再次確認密碼" required autocomplete="new-password" />';
-  const btnText = init ? "登入管理後台" : "建立專屬管理員";
-  const endpoint = init ? "/api/admin/login" : "/api/admin/initial-setup";
-
+function renderAdminLoginHtml(nonce) {
   return `<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -1846,47 +2097,29 @@ function renderAdminLoginHtml(isInitialized) {
 <body>
   <div class="card">
     <h2 style="margin-bottom: 12px; text-align: center; color: var(--primary);">🛡️ 購物雷達管理系統</h2>
-    <p style="color: #94a3b8; font-size: 13px; margin-bottom: 20px; text-align: center;">${promptText}</p>
-    <form id="authForm" onsubmit="handleAuth(event)">
+    <p style="color: #94a3b8; font-size: 13px; margin-bottom: 20px; text-align: center;">請輸入管理員帳號與密碼</p>
+    <form id="authForm">
       <input type="text" id="uname" class="input" placeholder="管理員帳號" required autocomplete="username" />
-      <input type="password" id="pword" class="input" placeholder="${pwdPlaceholder}" required autocomplete="current-password" />
-      ${confirmInput}
-      <button type="submit" id="submitBtn" class="btn">${btnText}</button>
+      <input type="password" id="pword" class="input" placeholder="管理員密碼" required autocomplete="current-password" />
+      <button type="submit" id="submitBtn" class="btn">登入管理後台</button>
     </form>
     <div id="errMsg" class="err-msg"></div>
   </div>
 
-  <script>
-    const IS_INIT = ${init};
-    async function handleAuth(e) {
+  <script nonce="${nonce}">
+    document.getElementById("authForm").addEventListener("submit", async function(e) {
       e.preventDefault();
       const u = document.getElementById("uname").value.trim();
       const p = document.getElementById("pword").value.trim();
-      const p2El = document.getElementById("pword2");
       const err = document.getElementById("errMsg");
       const btn = document.getElementById("submitBtn");
       err.style.display = "none";
       if (!u || !p) return;
 
-      if (!IS_INIT) {
-        const p2 = p2El ? p2El.value.trim() : "";
-        if (p !== p2) {
-          err.innerText = "兩次輸入的密碼不一致！";
-          err.style.display = "block";
-          return;
-        }
-        if (p.length < 8) {
-          err.innerText = "密碼長度需至少 8 碼！";
-          err.style.display = "block";
-          return;
-        }
-      }
-
       btn.disabled = true;
       btn.innerText = "驗證中...";
       try {
-        const endpoint = "${endpoint}";
-        const res = await fetch(endpoint, {
+        const res = await fetch("/api/admin/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: u, password: p })
@@ -1902,24 +2135,24 @@ function renderAdminLoginHtml(isInitialized) {
           err.innerText = data.message || "驗證失敗";
           err.style.display = "block";
           btn.disabled = false;
-          btn.innerText = "${btnText}";
+          btn.innerText = "登入管理後台";
         }
       } catch (errExp) {
         err.innerText = "連線失敗: " + errExp.message;
         err.style.display = "block";
         btn.disabled = false;
-        btn.innerText = "${btnText}";
+        btn.innerText = "登入管理後台";
       }
-    }
+    });
   </script>
 </body>
 </html>`;
 }
 
 /**
- * 視覺化管理員儀表板 HTML (僅在通過身分驗證後於伺服器端動態渲染，零 Token 存於 localStorage)
+ * 視覺化管理員儀表板 HTML (僅在通過身分驗證後於伺服器端動態渲染，零 Token 存於 localStorage，嚴格 CSP Nonce 防護)
  */
-function renderAdminDashboardHtml(adminUsername) {
+function renderAdminDashboardHtml(adminUsername, nonce) {
   const safeAdmin = escapeHtml(adminUsername || "Admin");
   return `<!DOCTYPE html>
 <html lang="zh-TW">
@@ -1955,8 +2188,8 @@ function renderAdminDashboardHtml(adminUsername) {
         <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">${safeAdmin}</strong></p>
       </div>
       <div>
-        <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal()">修改個人密碼</button>
-        <button class="btn" style="background:#475569; color:#fff;" onclick="logoutAdmin()">登出</button>
+        <button id="btnOpenChangePass" class="btn" style="background:#334155; color:#fff; margin-right: 8px;">修改個人密碼</button>
+        <button id="btnLogoutAdmin" class="btn" style="background:#475569; color:#fff;">登出</button>
       </div>
     </div>
 
@@ -1977,8 +2210,8 @@ function renderAdminDashboardHtml(adminUsername) {
         </div>
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <span id="fcmKeyStatus" class="badge" style="background: #78350f; color: #fbbf24;">檢測中...</span>
-          <button id="btnQuickTestFcm" class="btn" style="background: #1e293b; border: 1px solid #334155; color: #38bdf8; font-size: 12px; padding: 4px 10px; display: none;" onclick="doTestFcmV1()">🔍 測試授權</button>
-          <button id="btnToggleFcmEdit" class="btn" style="background: #0369a1; color: #fff; font-size: 12px; padding: 4px 12px; display: none;" onclick="toggleFcmEditForm()">✏️ 編輯憑證</button>
+          <button id="btnQuickTestFcm" class="btn" style="background: #1e293b; border: 1px solid #334155; color: #38bdf8; font-size: 12px; padding: 4px 10px; display: none;">🔍 測試授權</button>
+          <button id="btnToggleFcmEdit" class="btn" style="background: #0369a1; color: #fff; font-size: 12px; padding: 4px 12px; display: none;">✏️ 編輯憑證</button>
         </div>
       </div>
 
@@ -2000,21 +2233,21 @@ function renderAdminDashboardHtml(adminUsername) {
 
         <div style="margin-bottom: 12px;">
           <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">選擇 JSON 檔案 或 直接於下方貼上內容：</label>
-          <input type="file" id="saFileInput" accept=".json,application/json" class="input" style="padding: 6px; margin-bottom: 8px;" onchange="handleSaFileSelect(event)" />
+          <input type="file" id="saFileInput" accept=".json,application/json" class="input" style="padding: 6px; margin-bottom: 8px;" />
           <textarea id="saJsonInput" class="input" style="height: 100px; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="請貼上 Firebase 下載的 service-account.json 完整內容..."></textarea>
         </div>
 
         <div style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
-          <button id="btnCancelFcmEdit" class="btn" style="background: #334155; color: #94a3b8; display: none;" onclick="toggleFcmEditForm(false)">收起</button>
-          <button class="btn" style="background: #1e293b; border: 1px solid #334155; color: #fff;" onclick="doTestFcmV1()">🔍 測試 OAuth 2.0 授權</button>
-          <button class="btn" style="padding: 10px 20px;" onclick="doSaveFcmServiceAccount()">🚀 儲存並驗證 FCM v1 憑證</button>
+          <button id="btnCancelFcmEdit" class="btn" style="background: #334155; color: #94a3b8; display: none;">收起</button>
+          <button id="btnTestFcmSa" class="btn" style="background: #1e293b; border: 1px solid #334155; color: #fff;">🔍 測試 OAuth 2.0 授權</button>
+          <button id="btnSaveFcmSa" class="btn" style="padding: 10px 20px;">🚀 儲存並驗證 FCM v1 憑證</button>
         </div>
 
         <details style="margin-top: 14px; border-top: 1px solid #334155; padding-top: 10px;">
           <summary style="font-size: 12px; color: #64748b; cursor: pointer;">舊版相容選項 (FCM Legacy Server Key)</summary>
           <div style="margin-top: 8px; display: flex; gap: 10px;">
             <input type="password" id="fcmLegacyKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="舊版 FCM Server Key (AAAA...)" />
-            <button class="btn" style="background: #334155; color: #fff; white-space: nowrap;" onclick="doSaveLegacyFcmKey()">儲存舊版金鑰</button>
+            <button id="btnSaveLegacyFcm" class="btn" style="background: #334155; color: #fff; white-space: nowrap;">儲存舊版金鑰</button>
           </div>
         </details>
       </div>
@@ -2028,7 +2261,7 @@ function renderAdminDashboardHtml(adminUsername) {
       <div style="display: flex; gap: 10px;">
         <input type="text" id="pushTitle" class="input" style="flex: 1;" placeholder="推播標題" />
         <input type="text" id="pushBody" class="input" style="flex: 2;" placeholder="推播內文" />
-        <button class="btn" style="height: 42px;" onclick="sendBroadcastPush()">立即廣播</button>
+        <button id="btnSendBroadcast" class="btn" style="height: 42px;">立即廣播</button>
       </div>
     </div>
 
@@ -2040,14 +2273,14 @@ function renderAdminDashboardHtml(adminUsername) {
           <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">可勾選特定裝置發送推播測試，或切換 VIP / 普通會員巡查頻率</p>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn" style="background:#0284c7; color:#fff;" onclick="pushToSelectedDevices()">🎯 測試推送給勾選設備</button>
-          <button class="btn" style="background:#334155; color:#fff;" onclick="loadDevices()">🔄 重新整理</button>
+          <button id="btnPushSelected" class="btn" style="background:#0284c7; color:#fff;">🎯 測試推送給勾選設備</button>
+          <button id="btnRefreshDevices" class="btn" style="background:#334155; color:#fff;">🔄 重新整理</button>
         </div>
       </div>
       <table>
         <thead>
           <tr>
-            <th style="width: 36px;"><input type="checkbox" id="selectAllDevices" onchange="toggleSelectAllDevices(this)" title="全選/取消全選" /></th>
+            <th style="width: 36px;"><input type="checkbox" id="selectAllDevices" title="全選/取消全選" /></th>
             <th>帳號名稱</th><th>電子信箱</th><th>會員等級 (巡查頻率)</th><th>追蹤配額 (商品/店家/競拍)</th><th>FCM 推播狀態</th><th>帳號狀態</th><th>操作</th>
           </tr>
         </thead>
@@ -2062,7 +2295,7 @@ function renderAdminDashboardHtml(adminUsername) {
           <h3 style="color: var(--primary);">👥 管理員帳號管理 (支援多管理員)</h3>
           <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">各管理員可獨立登入，協同管理推播系統</p>
         </div>
-        <button class="btn" style="background:#334155; color:#fff;" onclick="loadAdmins()">🔄 重新整理</button>
+        <button id="btnRefreshAdmins" class="btn" style="background:#334155; color:#fff;">🔄 重新整理</button>
       </div>
 
       <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 12px; margin-bottom: 14px; border: 1px solid #334155;">
@@ -2070,7 +2303,7 @@ function renderAdminDashboardHtml(adminUsername) {
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
           <input type="text" id="newAdminUname" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員帳號 (至少3碼)" />
           <input type="password" id="newAdminPword" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員密碼 (至少6碼)" />
-          <button class="btn" style="height: 40px; white-space: nowrap;" onclick="doCreateAdmin()">新增管理員</button>
+          <button id="btnCreateAdmin" class="btn" style="height: 40px; white-space: nowrap;">新增管理員</button>
         </div>
         <p id="createAdminMsg" style="font-size: 12px; margin-top: 8px; display: none;"></p>
       </div>
@@ -2097,13 +2330,13 @@ function renderAdminDashboardHtml(adminUsername) {
       <input type="password" id="newPass1" class="input" placeholder="請輸入新密碼" />
       <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">再次確認密碼</label>
       <input type="password" id="newPass2" class="input" placeholder="再次確認新密碼" />
-      <button class="btn" style="width: 100%; padding: 12px;" onclick="doSubmitNewPassword()">確認儲存</button>
-      <button class="btn" style="width: 100%; padding: 10px; margin-top: 8px; background: #334155; color: #fff;" onclick="closeChangePassModal()">取消</button>
+      <button id="btnSubmitNewPass" class="btn" style="width: 100%; padding: 12px;">確認儲存</button>
+      <button id="btnCloseChangePass" class="btn" style="width: 100%; padding: 10px; margin-top: 8px; background: #334155; color: #fff;">取消</button>
       <p id="changePassErr" style="color: var(--err); font-size: 12px; margin-top: 10px; text-align: center; display: none;"></p>
     </div>
   </div>
 
-  <script>
+  <script nonce="${nonce}">
     function escapeHtml(str) {
       if (str === null || str === undefined) return "";
       return String(str)
@@ -2300,9 +2533,7 @@ function renderAdminDashboardHtml(adminUsername) {
       } catch (err) {
         console.error("loadConfig error:", err);
         if (statusEl) {
-          statusEl.innerText = "⚠️ 載入設定失敗 (點擊重試)";
-          statusEl.style.cursor = "pointer";
-          statusEl.onclick = () => loadConfig();
+          statusEl.innerText = "⚠️ 載入設定失敗，請重新整理頁面";
         }
       }
     }
@@ -2449,11 +2680,11 @@ function renderAdminDashboardHtml(adminUsername) {
             quotaDisplay = '<span style="font-size:12px; color:#38bdf8;">商品: ' + prodC + ' | 店家: ' + storeC + ' | 競拍: ' + aucC + ' <strong style="font-size:11px; color:#34d399;">(VIP無限)</strong></span>';
           }
 
-          const pushBtn = '<button class="btn" style="background:#0284c7; color:#fff; padding:4px 8px; font-size:11px; margin-right:4px;" onclick="pushToSingleDevice(\'' + safeUsername + '\')">推送</button>';
-          const roleBtn = '<button class="btn" style="background:#334155; color:#fff; padding:4px 8px; font-size:11px; margin-right:4px;" onclick="toggleRole(\'' + safeUsername + '\', \'' + (isLow ? 'standard' : 'low') + '\')">' + (isLow ? '升VIP' : '降普通') + '</button>';
+          const pushBtn = '<button class="btn btn-action-push" data-uname="' + safeUsername + '" style="background:#0284c7; color:#fff; padding:4px 8px; font-size:11px; margin-right:4px;">推送</button>';
+          const roleBtn = '<button class="btn btn-action-role" data-uname="' + safeUsername + '" data-nextrole="' + (isLow ? 'standard' : 'low') + '" style="background:#334155; color:#fff; padding:4px 8px; font-size:11px; margin-right:4px;">' + (isLow ? '升VIP' : '降普通') + '</button>';
           const blockBtn = isBlocked
-            ? '<button class="btn" style="background:#065f46; color:#34d399; padding:4px 8px; font-size:11px;" onclick="toggleBlockUser(\'' + safeUsername + '\', false)">🟢 解除</button>'
-            : '<button class="btn" style="background:#7f1d1d; color:#fca5a5; padding:4px 8px; font-size:11px;" onclick="toggleBlockUser(\'' + safeUsername + '\', true)">🚫 拉黑</button>';
+            ? '<button class="btn btn-action-block" data-uname="' + safeUsername + '" data-block="false" style="background:#065f46; color:#34d399; padding:4px 8px; font-size:11px;">🟢 解除</button>'
+            : '<button class="btn btn-action-block" data-uname="' + safeUsername + '" data-block="true" style="background:#7f1d1d; color:#fca5a5; padding:4px 8px; font-size:11px;">🚫 拉黑</button>';
 
           tr.innerHTML = '<td><input type="checkbox" class="device-select" value="' + safeUsername + '" data-fcm="' + d.has_fcm + '" /></td>' +
             '<td><strong>' + safeUsername + '</strong></td>' +
@@ -2468,23 +2699,31 @@ function renderAdminDashboardHtml(adminUsername) {
       } catch (err) {
         console.error("loadDevices error:", err);
         if (tbody) {
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#f87171; padding:20px; cursor:pointer;" onclick="loadDevices()">⚠️ 載入裝置列表失敗 (點擊重試)</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#f87171; padding:20px;">⚠️ 載入裝置列表失敗，請點擊重新整理重試</td></tr>';
         }
       }
     }
 
     async function toggleBlockUser(username, block) {
       const action = block ? "拉黑封鎖" : "解除封鎖";
-      if (!confirm(`確定要${action}「${username}」嗎？${block ? "封鎖後該帳號將無法登入、同步或接收任何推播！" : ""}`)) return;
+      const warning = block ? "封鎖後該帳號將無法登入、同步或接收任何推播！" : "";
+      if (!confirm("確定要" + action + " " + username + " 嗎？" + warning)) return;
+
       try {
         const res = await adminFetch("/api/admin/toggle-block", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, block })
         });
+
+        if (!res.ok) throw new Error("伺服器錯誤 (" + res.status + ")");
+
         const data = await res.json();
         alert(data.message || (data.success ? "操作成功" : "操作失敗"));
-        loadDevices();
+
+        if (data.success) {
+          loadDevices();
+        }
       } catch (e) {
         alert("連線錯誤: " + e.message);
       }
@@ -2584,7 +2823,7 @@ function renderAdminDashboardHtml(adminUsername) {
           const timeStr = a.createdAt ? new Date(a.createdAt).toLocaleString("zh-TW", { hour12: false }) : "-";
           const actionBtn = isSelf
             ? '<span style="color:#64748b; font-size:12px;">(本人)</span>'
-            : '<button class="btn" style="background:#ef4444; color:#fff; padding:4px 10px; font-size:12px;" onclick="doDeleteAdmin(\'' + safeName + '\')">刪除</button>';
+            : '<button class="btn btn-action-del-admin" data-uname="' + safeName + '" style="background:#ef4444; color:#fff; padding:4px 10px; font-size:12px;">刪除</button>';
           tr.innerHTML = '<td><strong>' + safeName + '</strong> ' + (isSelf ? '<span class="badge badge-30" style="margin-left:6px;">目前登入</span>' : '') + '</td>' +
             '<td style="color:#94a3b8; font-size:12px;">' + timeStr + '</td>' +
             '<td style="color:#94a3b8; font-size:12px;">' + escapeHtml(a.createdBy || "system") + '</td>' +
@@ -2594,7 +2833,7 @@ function renderAdminDashboardHtml(adminUsername) {
       } catch (err) {
         console.error("loadAdmins error:", err);
         if (tbody) {
-          tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#f87171; padding:16px; cursor:pointer;" onclick="loadAdmins()">⚠️ 載入管理員清單失敗 (點擊重試)</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#f87171; padding:16px;">⚠️ 載入管理員清單失敗，請點擊重新整理重試</td></tr>';
         }
       }
     }
@@ -2659,6 +2898,58 @@ function renderAdminDashboardHtml(adminUsername) {
         alert("連線錯誤: " + e.message);
       }
     }
+
+    // 事件委派：表格按鈕點擊處理
+    document.getElementById("deviceTableBody")?.addEventListener("click", function(e) {
+      const pushBtn = e.target.closest(".btn-action-push");
+      if (pushBtn) {
+        const uname = pushBtn.getAttribute("data-uname");
+        if (uname) pushToSingleDevice(uname);
+        return;
+      }
+      const roleBtn = e.target.closest(".btn-action-role");
+      if (roleBtn) {
+        const uname = roleBtn.getAttribute("data-uname");
+        const role = roleBtn.getAttribute("data-nextrole");
+        if (uname && role) toggleRole(uname, role);
+        return;
+      }
+      const blockBtn = e.target.closest(".btn-action-block");
+      if (blockBtn) {
+        const uname = blockBtn.getAttribute("data-uname");
+        const block = blockBtn.getAttribute("data-block") === "true";
+        if (uname) toggleBlockUser(uname, block);
+        return;
+      }
+    });
+
+    document.getElementById("adminsTableBody")?.addEventListener("click", function(e) {
+      const delBtn = e.target.closest(".btn-action-del-admin");
+      if (delBtn) {
+        const uname = delBtn.getAttribute("data-uname");
+        if (uname) doDeleteAdmin(uname);
+        return;
+      }
+    });
+
+    // 靜態按鈕事件綁定
+    document.getElementById("btnOpenChangePass")?.addEventListener("click", showChangePassModal);
+    document.getElementById("btnLogoutAdmin")?.addEventListener("click", logoutAdmin);
+    document.getElementById("btnQuickTestFcm")?.addEventListener("click", doTestFcmV1);
+    document.getElementById("btnToggleFcmEdit")?.addEventListener("click", function() { toggleFcmEditForm(); });
+    document.getElementById("btnCancelFcmEdit")?.addEventListener("click", function() { toggleFcmEditForm(false); });
+    document.getElementById("btnTestFcmSa")?.addEventListener("click", doTestFcmV1);
+    document.getElementById("btnSaveFcmSa")?.addEventListener("click", doSaveFcmServiceAccount);
+    document.getElementById("btnSaveLegacyFcm")?.addEventListener("click", doSaveLegacyFcmKey);
+    document.getElementById("saFileInput")?.addEventListener("change", handleSaFileSelect);
+    document.getElementById("btnSendBroadcast")?.addEventListener("click", sendBroadcastPush);
+    document.getElementById("btnPushSelected")?.addEventListener("click", pushToSelectedDevices);
+    document.getElementById("btnRefreshDevices")?.addEventListener("click", loadDevices);
+    document.getElementById("selectAllDevices")?.addEventListener("change", function(e) { toggleSelectAllDevices(e.target); });
+    document.getElementById("btnRefreshAdmins")?.addEventListener("click", loadAdmins);
+    document.getElementById("btnCreateAdmin")?.addEventListener("click", doCreateAdmin);
+    document.getElementById("btnSubmitNewPass")?.addEventListener("click", doSubmitNewPassword);
+    document.getElementById("btnCloseChangePass")?.addEventListener("click", closeChangePassModal);
 
     loadConfig();
     loadDevices();
