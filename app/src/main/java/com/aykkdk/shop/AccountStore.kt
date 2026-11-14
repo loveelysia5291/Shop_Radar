@@ -122,13 +122,48 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     /**
-     * 訪客模式相容方法 (僅在使用者已登入時進行同步)
+     * 確保裝置已向雲端註冊連線 (若尚未登入專屬帳號，自動以設備 ID 註冊就緒，開箱即用)
      */
     suspend fun ensureDeviceRegistered(appContext: Context): Result<String> = withContext(Dispatchers.IO) {
-        if (!isLoggedIn()) {
-            return@withContext Result.failure(Exception("目前為訪客模式，請先登入帳號以啟用雲端推播"))
+        if (isLoggedIn()) {
+            return@withContext Result.success("已登入專屬帳號 (${getUsername()})")
         }
-        Result.success("已登入專屬帳號 (${getUsername()})")
+        runCatching {
+            val endpoint = getServerUrl().trimEnd('/')
+            val url = URL("$endpoint/api/device/auto-register")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            val payload = JSONObject().apply {
+                put("device_id", getDeviceId())
+                put("fcm_token", getFcmToken())
+                put("device_name", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim())
+            }.toString()
+
+            conn.outputStream.use { it.write(payload.toByteArray()) }
+            val status = conn.responseCode
+            val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+
+            val json = JSONObject(text.ifBlank { "{}" })
+            if (json.optBoolean("success", false)) {
+                val token = json.optString("token")
+                val uname = json.optString("username", "dev_${getDeviceId().take(8)}")
+                val role = json.optString("role", "low")
+                prefs.edit()
+                    .putString("username", uname)
+                    .putString("token", token)
+                    .putString("user_role", role)
+                    .apply()
+                "裝置連線就緒 ($uname)"
+            } else {
+                throw Exception(json.optString("message", "裝置自動註冊失敗 ($status)"))
+            }
+        }
     }
 
     suspend fun login(account: String, pass: String, serverUrl: String? = null): Result<String> = withContext(Dispatchers.IO) {
@@ -341,7 +376,7 @@ class AccountStore private constructor(private val context: Context) {
     suspend fun syncToCloud(appContext: Context): Result<SyncResult> = withContext(Dispatchers.IO) {
         runCatching {
             if (!isLoggedIn()) {
-                throw Exception("目前為訪客模式，請先登入帳號以啟動雲端推播與資料同步")
+                ensureDeviceRegistered(appContext).getOrThrow()
             }
             val activeToken = getToken()
 
@@ -449,9 +484,11 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     fun triggerCloudSync(context: Context) {
-        if (!isLoggedIn()) return
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                if (!isLoggedIn()) {
+                    ensureDeviceRegistered(context.applicationContext)
+                }
                 syncToCloud(context.applicationContext)
             } catch (_: Exception) {}
         }

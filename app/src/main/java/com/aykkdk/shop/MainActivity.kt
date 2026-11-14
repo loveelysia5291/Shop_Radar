@@ -323,12 +323,13 @@ class MainActivity : ComponentActivity() {
             if (!token.isNullOrBlank()) {
                 account.saveFcmToken(token)
             }
-            // 核心規則：只有登入帳號才可以啟動雲端推播服務與同步
-            if (account.isLoggedIn()) {
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                    account.uploadFcmToken(token.orEmpty())
-                    account.syncToCloud(this@MainActivity)
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                // 自動確保裝置就緒連線 (若未手動登入專屬帳號，自動以設備 ID 註冊就緒，開箱即用)
+                account.ensureDeviceRegistered(this@MainActivity)
+                if (!token.isNullOrBlank()) {
+                    account.uploadFcmToken(token)
                 }
+                account.syncToCloud(this@MainActivity)
             }
         }
         // Register on the actual Activity dispatcher before composing any screen.

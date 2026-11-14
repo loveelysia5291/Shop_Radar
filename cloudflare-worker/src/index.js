@@ -1115,8 +1115,59 @@ export default {
           lookupUsername = mappedUser;
         }
 
-        const rawUser = await kvGet(env, `user:${lookupUsername}`);
-        if (!rawUser) return jsonResponse({ success: false, message: "帳號或密碼錯誤" }, 401);
+        let rawUser = await kvGet(env, `user:${lookupUsername}`);
+        if (!rawUser) {
+          rawUser = await kvGet(env, `user:${lookupUsername.toLowerCase()}`);
+        }
+
+        // 若一般使用者資料表查無此帳號，嘗試是否為管理員帳號登入 App
+        if (!rawUser) {
+          const adminObj = await findAdminUser(env, accountInput);
+          if (adminObj) {
+            let adminPwdMatches = false;
+            if (adminObj.salt) {
+              const { hash } = await hashPassword(password, adminObj.salt);
+              adminPwdMatches = timingSafeEqual(hash, adminObj.hash);
+            } else if (adminObj.hash) {
+              const h = await sha256(password);
+              adminPwdMatches = timingSafeEqual(h, adminObj.hash);
+            }
+
+            if (adminPwdMatches) {
+              await clearRateLimit(env, rateLimitKey);
+              const token = crypto.randomUUID();
+              const adminUserData = {
+                username: adminObj.username,
+                email: "admin@local",
+                passwordHash: adminObj.hash,
+                passwordSalt: adminObj.salt,
+                role: "standard", // VIP 會員 (30分鐘巡查，無限配額)
+                token,
+                isRegisteredAccount: true,
+                isAnonymous: false,
+                createdAt: Date.now(),
+                fcmToken: "",
+                subscriptions: [],
+                auctions: [],
+                logistics: []
+              };
+              await kvPut(env, `user:${adminObj.username}`, JSON.stringify(adminUserData));
+              await kvPut(env, `user:${adminObj.username.toLowerCase()}`, JSON.stringify(adminUserData));
+              await kvPut(env, `token:${token}`, adminObj.username);
+              await recordUserInList(env, adminObj.username);
+
+              return jsonResponse({
+                success: true,
+                message: "管理員身分登入成功 (VIP 會員模式)",
+                token,
+                username: adminObj.username,
+                email: "admin@local",
+                role: "standard"
+              });
+            }
+          }
+          return jsonResponse({ success: false, message: "帳號或密碼錯誤" }, 401);
+        }
 
         const userData = JSON.parse(rawUser);
         if (userData.isBlocked) {
@@ -1137,6 +1188,25 @@ export default {
             const upgraded = await hashPassword(password);
             userData.passwordHash = upgraded.hash;
             userData.passwordSalt = upgraded.salt;
+          }
+        }
+
+        // 若一般使用者密碼比對失敗，亦確認是否管理員密碼
+        if (!passwordMatches) {
+          const adminObj = await findAdminUser(env, accountInput);
+          if (adminObj) {
+            if (adminObj.salt) {
+              const { hash } = await hashPassword(password, adminObj.salt);
+              passwordMatches = timingSafeEqual(hash, adminObj.hash);
+            } else if (adminObj.hash) {
+              const h = await sha256(password);
+              passwordMatches = timingSafeEqual(h, adminObj.hash);
+            }
+            if (passwordMatches) {
+              userData.passwordHash = adminObj.hash;
+              userData.passwordSalt = adminObj.salt;
+              userData.role = "standard";
+            }
           }
         }
 
@@ -1254,13 +1324,67 @@ export default {
         });
       }
 
-      // 13. 訪客/舊版自動註冊阻擋 (強制要求登入帳號方可啟動推播服務)
+      // 13. 裝置就緒自動註冊 API (Zero-Config Device Auto Register)
+      // 允許手機 App 開啟時自動登記裝置 ID 與 FCM Token，預設為普通會員 (low: 60分鐘巡查，限制3商品/2店家/3競拍)
       if (path === "/api/device/auto-register") {
         if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
+        let body = null;
+        try { body = await request.json(); } catch (_) { body = null; }
+        if (!body || typeof body !== "object") {
+          return jsonResponse({ success: false, message: "無效的請求格式" }, 400);
+        }
+
+        const deviceId = typeof body.device_id === "string" ? body.device_id.trim() : "";
+        const fcmToken = typeof body.fcm_token === "string" ? body.fcm_token.trim() : "";
+        const deviceName = typeof body.device_name === "string" ? body.device_name.trim() : "Android Device";
+
+        if (!deviceId) {
+          return jsonResponse({ success: false, message: "device_id 不可為空" }, 400);
+        }
+
+        const safeDeviceId = deviceId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32);
+        const username = `dev_${safeDeviceId.slice(0, 16)}`;
+        const existingRaw = await kvGet(env, `user:${username}`);
+        let userData = null;
+
+        if (existingRaw) {
+          try {
+            userData = JSON.parse(existingRaw);
+          } catch (_) {}
+        }
+
+        if (userData) {
+          if (fcmToken) userData.fcmToken = fcmToken;
+          if (deviceName) userData.deviceName = deviceName;
+          userData.lastActiveAt = Date.now();
+        } else {
+          const token = crypto.randomUUID();
+          userData = {
+            username,
+            role: "low", // 預設為普通會員 (60分鐘巡查，限制3商品/2店家/3競拍)
+            token,
+            isAnonymous: true,
+            isRegisteredAccount: false,
+            fcmToken: fcmToken || "",
+            deviceName: deviceName || "Android Device",
+            createdAt: Date.now(),
+            subscriptions: [],
+            auctions: [],
+            logistics: []
+          };
+          await kvPut(env, `token:${token}`, username);
+        }
+
+        await kvPut(env, `user:${username}`, JSON.stringify(userData));
+        await recordUserInList(env, username);
+
         return jsonResponse({
-          success: false,
-          message: "為確保帳號安全與防濫用，僅限註冊並登入專屬帳號後方可啟用雲端推播與背景監控服務。請在 App 內註冊或登入。"
-        }, 403);
+          success: true,
+          message: "裝置就緒，已自動建立連線",
+          token: userData.token,
+          username: userData.username,
+          role: userData.role || "low"
+        });
       }
 
       // 11. 身份認證保護
@@ -1438,8 +1562,7 @@ async function runScheduledMonitoring(env) {
       const userRaw = await kvGet(env, `user:${username}`);
       if (!userRaw) continue;
       const user = JSON.parse(userRaw);
-      // 核心規則：僅限已正式註冊並有密碼憑證之登入帳號啟動推播服務，訪客不進行巡查推播
-      if (!user.isRegisteredAccount && !user.passwordHash) continue;
+      // 核心規則：拉黑封鎖帳號或無 FCM Token 者不進行巡查推播
       if (user.isBlocked) continue; // 拉黑封鎖帳號不進行定時監控巡查
       if (!user.fcmToken) continue;
 
