@@ -301,11 +301,11 @@ class AccountStore private constructor(private val context: Context) {
             if (json.optBoolean("success", false)) {
                 ForgotPasswordResponse(
                     success = true,
-                    message = json.optString("message", "驗證碼已生成"),
+                    message = json.optString("message", "新密碼已發送至您的註冊電子信箱"),
                     devCode = json.optString("devCode").takeIf { it.isNotBlank() }
                 )
             } else {
-                throw Exception(json.optString("message", "申請驗證碼失敗 ($status)"))
+                throw Exception(json.optString("message", "申請重設密碼失敗 ($status)"))
             }
         }
     }

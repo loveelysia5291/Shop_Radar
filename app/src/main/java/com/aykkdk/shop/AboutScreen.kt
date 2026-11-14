@@ -670,15 +670,9 @@ private fun ForgotPasswordDialog(
     val scope = rememberCoroutineScope()
     val accountStore = remember { AccountStore.get(context) }
 
-    var step by remember { mutableStateOf(1) } // 1: 申請驗證碼, 2: 輸入驗證碼與新密碼
     var email by remember { mutableStateOf("") }
-
-    var code by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
-    var confirmPassword by remember { mutableStateOf("") }
-    var newPassVisible by remember { mutableStateOf(false) }
-
-    var devCodeHint by remember { mutableStateOf<String?>(null) }
+    var isSubmitted by remember { mutableStateOf(false) }
+    var successMsg by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -698,7 +692,7 @@ private fun ForgotPasswordDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (step == 1) "忘記密碼 - 驗證信箱" else "重設全新密碼",
+                        if (isSubmitted) "密碼已重設發送" else "忘記密碼 - 寄送新密碼",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -709,9 +703,56 @@ private fun ForgotPasswordDialog(
 
                 Spacer(Modifier.height(10.dp))
 
-                if (step == 1) {
+                if (isSubmitted) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "新密碼已發送至您的電子信箱！",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                successMsg.ifBlank { "系統已重設一組全新密碼並寄送至您的註冊電子信箱 ($email)，請前往信箱查收並使用新密碼登入。" },
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Button(
+                            onClick = {
+                                onSuccess()
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("前往登入")
+                        }
+                    }
+                } else {
                     Text(
-                        "請輸入您註冊的電子信箱，系統將生成 6 位數重設驗證碼。",
+                        "請輸入您註冊的電子信箱，系統將自動重設一組全新密碼並發送至您的信箱。",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -728,151 +769,50 @@ private fun ForgotPasswordDialog(
                         shape = RoundedCornerShape(14.dp),
                         leadingIcon = { Icon(Icons.Default.Email, null) }
                     )
-                } else {
-                    Text(
-                        "重設驗證碼已生成（10分鐘內有效），請輸入驗證碼並設定您的全新密碼。",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
 
-                    devCodeHint?.let { codeHint ->
+                    errorMessage?.let { err ->
                         Spacer(Modifier.height(10.dp))
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                "【獨立伺服器提示】重設驗證碼為：$codeHint",
-                                modifier = Modifier.padding(10.dp),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                        Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                     }
 
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(20.dp))
 
-                    OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it },
-                        label = { Text("6 位數重設驗證碼") },
-                        placeholder = { Text("請輸入 6 碼數字") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
-                    )
-
-                    Spacer(Modifier.height(10.dp))
-
-                    OutlinedTextField(
-                        value = newPassword,
-                        onValueChange = { newPassword = it },
-                        label = { Text("全新密碼") },
-                        placeholder = { Text("至少 6 碼新密碼") },
-                        singleLine = true,
-                        visualTransformation = if (newPassVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        leadingIcon = { Icon(Icons.Default.Lock, null) },
-                        trailingIcon = {
-                            IconButton(onClick = { newPassVisible = !newPassVisible }) {
-                                Icon(if (newPassVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
-                            }
-                        }
-                    )
-
-                    Spacer(Modifier.height(10.dp))
-
-                    OutlinedTextField(
-                        value = confirmPassword,
-                        onValueChange = { confirmPassword = it },
-                        label = { Text("再次確認全新密碼") },
-                        placeholder = { Text("請再次輸入新密碼") },
-                        singleLine = true,
-                        visualTransformation = if (newPassVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        leadingIcon = { Icon(Icons.Default.Lock, null) }
-                    )
-                }
-
-                errorMessage?.let { err ->
-                    Spacer(Modifier.height(10.dp))
-                    Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
-
-                Spacer(Modifier.height(20.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onDismiss) { Text("取消") }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            if (step == 1) {
-                                if (email.isBlank()) {
-                                    errorMessage = "請填寫註冊的電子信箱"
-                                    return@Button
-                                }
-                                scope.launch {
-                                    loading = true
-                                    errorMessage = null
-                                    accountStore.requestPasswordReset(email, currentServerUrl)
-                                        .onSuccess {
-                                            loading = false
-                                            devCodeHint = it.devCode
-                                            if (!it.devCode.isNullOrBlank()) {
-                                                code = it.devCode
-                                            }
-                                            step = 2
-                                        }.onFailure {
-                                            loading = false
-                                            errorMessage = it.message ?: "申請失敗，請確認信箱是否已註冊"
-                                        }
-                                }
-                            } else {
-                                if (code.isBlank() || newPassword.isBlank()) {
-                                    errorMessage = "請填寫驗證碼與新密碼"
-                                    return@Button
-                                }
-                                if (newPassword.length < 6) {
-                                    errorMessage = "新密碼長度需至少 6 個字元"
-                                    return@Button
-                                }
-                                if (newPassword != confirmPassword) {
-                                    errorMessage = "兩次輸入的新密碼不相符"
-                                    return@Button
-                                }
-                                scope.launch {
-                                    loading = true
-                                    errorMessage = null
-                                    accountStore.resetPassword(email, code, newPassword, currentServerUrl)
-                                        .onSuccess {
-                                            loading = false
-                                            Toast.makeText(context, "密碼已重設成功！請使用新密碼登入", Toast.LENGTH_LONG).show()
-                                            onSuccess()
-                                        }.onFailure {
-                                            loading = false
-                                            errorMessage = it.message ?: "重設失敗，請確認驗證碼是否正確"
-                                        }
-                                }
-                            }
-                        },
-                        enabled = !loading,
-                        shape = RoundedCornerShape(12.dp)
+                        horizontalArrangement = Arrangement.End
                     ) {
-                        if (loading) {
-                            CircularProgressIndicator(Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                            Spacer(Modifier.width(6.dp))
-                            Text("處理中...")
-                        } else {
-                            Text(if (step == 1) "取得重設驗證碼" else "確認重設密碼")
+                        TextButton(onClick = onDismiss) { Text("取消") }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (email.isBlank() || !email.contains("@")) {
+                                    errorMessage = "請填寫正確格式的註冊電子信箱"
+                                    return@Button
+                                }
+                                scope.launch {
+                                    loading = true
+                                    errorMessage = null
+                                    accountStore.requestPasswordReset(email.trim(), currentServerUrl)
+                                        .onSuccess {
+                                            loading = false
+                                            successMsg = it.message
+                                            isSubmitted = true
+                                        }.onFailure {
+                                            loading = false
+                                            errorMessage = it.message ?: "發送失敗，請確認信箱是否已註冊"
+                                        }
+                                }
+                            },
+                            enabled = !loading,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            if (loading) {
+                                CircularProgressIndicator(Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(6.dp))
+                                Text("寄送中...")
+                            } else {
+                                Text("發送新密碼至信箱")
+                            }
                         }
                     }
                 }
