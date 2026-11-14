@@ -662,10 +662,15 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         if (subscriptionRefreshing || subscriptionShopSearching || fetching) return
         if (!RefreshNetwork.connected(context)) { warning = "網路未連線，請連線後再刷新。"; return }
         val targets = RefreshRunner.subscriptions(context)
-        if (targets.isEmpty()) return
         val requestId = ++subscriptionRefreshId
         subscriptionRefreshing = true
         subscriptionRefreshJob = navigationScope.launch {
+            AccountStore.get(context).checkServerStatus(context)
+            if (targets.isEmpty()) {
+                subscriptionRefreshing = false
+                subscriptionRefreshJob = null
+                return@launch
+            }
             val alerts = mutableListOf<ProductSubscriptionAlert>()
             val errors = mutableListOf<String>()
             try {
@@ -690,15 +695,20 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         if (auctionRefreshing) return
         if (!RefreshNetwork.connected(context)) { warning = "網路未連線，請連線後再刷新。"; return }
         val targets = auctionStore.list().map { RefreshTarget(RefreshKind.AUCTION, it.optString("url")) }
-        if (targets.isEmpty()) return
         auctionRefreshing = true
         // Owned by the app, not a lazy pager page: switching tabs must not cancel a manual refresh.
         navigationScope.launch {
+            AccountStore.get(context).checkServerStatus(context)
+            if (targets.isEmpty()) {
+                auctionRefreshing = false
+                return@launch
+            }
             val errors = mutableListOf<String>()
             try {
                 targets.forEach { target -> RefreshRunner.refresh(context, target).error?.let(errors::add) }
                 SubscriptionCleanupPolicy.cleanExpired(context)
                 if (errors.isNotEmpty()) warning = "${errors.size} 筆競標刷新未完成。\n${errors.distinct().take(3).joinToString("\n")}"
+                AccountStore.get(context).triggerCloudSync(context)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { warning = "競標刷新未完成，已保留原有資料。" }
             finally { auctionRefreshing = false }

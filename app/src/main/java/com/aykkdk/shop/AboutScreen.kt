@@ -66,6 +66,8 @@ fun AboutScreen(
     var serverUrl by remember { mutableStateOf(accountStore.getServerUrl()) }
     var fcmToken by remember { mutableStateOf(accountStore.getFcmToken()) }
     var lastSyncTime by remember { mutableStateOf(accountStore.getLastSyncTime()) }
+    var isMaintenance by remember { mutableStateOf(accountStore.isMaintenanceMode()) }
+    var maintenanceMessage by remember { mutableStateOf(accountStore.getMaintenanceMessage()) }
 
     var showAuthDialog by remember { mutableStateOf(false) }
     var showLogoutConfirmDialog by remember { mutableStateOf(false) }
@@ -82,6 +84,11 @@ fun AboutScreen(
 
     // 初始化自動取得 FCM Device Token，僅在已登入帳號時進行背景推播同步
     LaunchedEffect(Unit) {
+        scope.launch {
+            accountStore.checkServerStatus(context)
+            isMaintenance = accountStore.isMaintenanceMode()
+            maintenanceMessage = accountStore.getMaintenanceMessage()
+        }
         FcmTokenManager.fetchToken(context) { token ->
             if (!token.isNullOrBlank()) {
                 fcmToken = token
@@ -90,6 +97,8 @@ fun AboutScreen(
                 scope.launch {
                     accountStore.uploadFcmToken(token.orEmpty())
                     accountStore.syncToCloud(context)
+                    isMaintenance = accountStore.isMaintenanceMode()
+                    maintenanceMessage = accountStore.getMaintenanceMessage()
                 }
             }
             username = accountStore.getUsername()
@@ -220,10 +229,14 @@ fun AboutScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = if (isLoggedIn) "雲端即時同步中 (訂閱變更自動同步)"
-                                else "尚未登入帳號",
+                                text = if (isLoggedIn) {
+                                    if (isMaintenance) {
+                                        if (maintenanceMessage.isNotBlank()) "⚠️ 伺服器維護中 ($maintenanceMessage) - 已暫停回傳"
+                                        else "⚠️ 伺服器維護中 (已暫停資料回傳)"
+                                    } else "雲端即時同步中 (訂閱變更自動同步)"
+                                } else "尚未登入帳號",
                                 fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.outline
+                                color = if (isLoggedIn && isMaintenance) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline
                             )
                             if (isLoggedIn) {
                                 TextButton(

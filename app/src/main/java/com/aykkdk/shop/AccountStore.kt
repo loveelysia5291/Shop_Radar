@@ -95,6 +95,15 @@ class AccountStore private constructor(private val context: Context) {
 
     fun getLastSyncTime(): Long = prefs.getLong("last_sync_time", 0L)
 
+    fun isMaintenanceMode(): Boolean = prefs.getBoolean("server_maintenance", false)
+    fun getMaintenanceMessage(): String = prefs.getString("server_maintenance_message", "").orEmpty()
+    fun setMaintenanceMode(enabled: Boolean, message: String = "") {
+        prefs.edit()
+            .putBoolean("server_maintenance", enabled)
+            .putString("server_maintenance_message", message)
+            .apply()
+    }
+
     fun logout() {
         prefs.edit()
             .remove("username")
@@ -152,6 +161,14 @@ class AccountStore private constructor(private val context: Context) {
             conn.disconnect()
 
             val json = JSONObject(text.ifBlank { "{}" })
+            val isMaint = status == 503 || json.optBoolean("maintenance", false) || json.optString("code") == "MAINTENANCE"
+            if (isMaint) {
+                val mMsg = json.optString("message", "伺服器系統維護中，暫停同步")
+                setMaintenanceMode(true, mMsg)
+                throw Exception(mMsg)
+            } else {
+                setMaintenanceMode(false)
+            }
             if (json.optBoolean("success", false)) {
                 val vault = json.optJSONObject("vault") ?: JSONObject()
                 val products = vault.optJSONArray("products") ?: JSONArray()
@@ -456,6 +473,9 @@ class AccountStore private constructor(private val context: Context) {
             if (!isLoggedIn()) {
                 throw Exception("尚未登入專屬帳號，無法同步至雲端")
             }
+            if (isMaintenanceMode()) {
+                throw Exception("伺服器維護中，暫停同步回傳")
+            }
             runCatching { fetchUserProfile() }
             val activeToken = getToken()
 
@@ -522,6 +542,14 @@ class AccountStore private constructor(private val context: Context) {
             conn.disconnect()
 
             val json = JSONObject(text.ifBlank { "{}" })
+            val isMaint = status == 503 || json.optBoolean("maintenance", false) || json.optString("code") == "MAINTENANCE"
+            if (isMaint) {
+                val mMsg = json.optString("message", "伺服器系統維護中，暫停同步")
+                setMaintenanceMode(true, mMsg)
+                throw Exception(mMsg)
+            } else {
+                setMaintenanceMode(false)
+            }
             if (json.optBoolean("success", false)) {
                 val now = System.currentTimeMillis()
                 val role = json.optString("role", getRole())
@@ -549,10 +577,34 @@ class AccountStore private constructor(private val context: Context) {
     fun triggerCloudSync(context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                if (isLoggedIn()) {
+                if (isLoggedIn() && !isMaintenanceMode()) {
                     syncToCloud(context.applicationContext)
                 }
             } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun checkServerStatus(appContext: Context): Result<Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = URL("${getServerUrl()}/api/system/status")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 6000
+            conn.readTimeout = 6000
+            val status = conn.responseCode
+            val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+
+            val json = JSONObject(text.ifBlank { "{}" })
+            val maintenance = status == 503 || json.optBoolean("maintenance", false) || json.optString("code") == "MAINTENANCE"
+            val msg = json.optString("message", if (maintenance) "伺服器維護中" else "")
+            val wasMaint = isMaintenanceMode()
+            setMaintenanceMode(maintenance, msg)
+            if (wasMaint && !maintenance) {
+                // 發現伺服器已恢復正常！立即觸發推送
+                triggerCloudSync(appContext)
+            }
+            !maintenance
         }
     }
 
