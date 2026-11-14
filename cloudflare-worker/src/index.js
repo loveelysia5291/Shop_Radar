@@ -1,62 +1,199 @@
 /**
  * 購物雷達 (Shop Radar) - Cloudflare Worker 雲端推播與背景監控服務
  * 
- * 安全性與漏洞修復版本：
- * 1. 預設管理員帳號 ADMIN，預設密碼 8 個 0 (00000000)。
- * 2. 首次登入強制彈窗要求修改密碼，未修改前全面鎖定所有管理功能。
- * 3. 密碼零明文儲存：PBKDF2 10 萬次疊代加鹽雜湊 (Salt + PBKDF2-SHA256)。
- * 4. 嚴密漏洞修復：
- *    - XSS 防護：所有前端動態資料經 escapeHtml 轉義。
- *    - SSRF 防護：嚴格限制只允許白名單 HTTPS 網址。
- *    - 時序攻擊防護：採用 timingSafeEqual 比對雜湊。
- *    - 暴力破解防護：密碼錯誤 5 次自動鎖定 15 分鐘。
- * 5. FCM 自動綁定與開箱即用：支援 Android 裝置啟動自動無感註冊與同步。
+ * 現代企業級高安全加固版本 (全面修復安全掃描 9 項問題)：
+ * 1. 零預設弱憑證：初次部署強制要求管理者自行設定專屬名稱與高強度密碼。
+ * 2. 前端路由隔離防護：未登入者僅回傳純淨登入表單，所有敏感管理 API 完全隔離於認證後。
+ * 3. 嚴格 CORS 與 CSRF 防護：管理端點全面禁止外部跨域，僅允許同源請求。
+ * 4. 根端點極簡安全健康檢查：不洩漏任何架構、版本、KV 連線狀態或後台路由。
+ * 5. 安全 HttpOnly Cookie Session：Token 絕不存於 localStorage，免疫 XSS 竊取。
+ * 6. 全面資安標頭：Content-Security-Policy, X-Frame-Options: DENY (防點擊劫持), nosniff 等。
+ * 7. 全流程多層防暴力破解：從第 1、2 次失敗嘗試起即實作累進延遲，5 次鎖定 15 分鐘。
+ * 8. 密碼零明文儲存：PBKDF2 10 萬次疊代隨機加鹽雜湊 (Salt + PBKDF2-SHA256) 與時序安全比對。
  */
+
+const SECURITY_HEADERS = {
+  "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload"
+};
+
+const HTML_SECURITY_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  ...SECURITY_HEADERS
+};
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "X-Content-Type-Options": "nosniff",
-  "X-Frame-Options": "SAMEORIGIN",
-  "Referrer-Policy": "strict-origin-when-cross-origin"
+  "Vary": "Origin",
+  ...SECURITY_HEADERS
 };
 
 const memoryStore = new Map();
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: CORS_HEADERS });
-    }
-
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // 1. OPTIONS Preflight 跨域請求處理 (管理端點禁止外部跨域，一般 API 開放)
+    if (request.method === "OPTIONS") {
+      const isAdm = path.startsWith("/api/admin") || path.startsWith("/admin");
+      const origin = request.headers.get("Origin");
+      const selfOrigin = url.origin;
+      const headers = { ...SECURITY_HEADERS };
+
+      if (isAdm) {
+        if (origin && origin === selfOrigin) {
+          headers["Access-Control-Allow-Origin"] = selfOrigin;
+          headers["Access-Control-Allow-Credentials"] = "true";
+          headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+          headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+          headers["Vary"] = "Origin";
+          return new Response(null, { status: 204, headers });
+        }
+        return new Response(null, { status: 403, headers: { ...SECURITY_HEADERS, "Vary": "Origin" } });
+      }
+
+      headers["Access-Control-Allow-Origin"] = origin || "*";
+      headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+      headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+      headers["Vary"] = "Origin";
+      return new Response(null, { status: 204, headers });
+    }
+
+    // 2. CSRF 跨站防護：針對管理端點的變更操作 (POST) 嚴格檢驗 Origin
+    if (path.startsWith("/api/admin/") && request.method === "POST") {
+      const origin = request.headers.get("Origin");
+      if (origin && origin !== url.origin) {
+        return jsonResponse({ success: false, message: "跨域請求已被安全機制阻擋 (CSRF 防護)" }, 403, {}, request);
+      }
+    }
+
     try {
-      // 1. 首頁健康檢查
+      // 3. 首頁健康檢查 (不洩露系統架構、版本號、KV狀態或管理員URL)
       if (path === "/" || path === "/api/health") {
-        return jsonResponse({
-          status: "online",
-          service: "Shop Radar Cloud Push Server",
-          version: "2.1.0",
-          server_time: new Date().toISOString(),
-          kv_connected: !!env.RADAR_KV,
-          security: "PBKDF2-100k-Salted-Strict",
-          admin_login_url: "/admin"
+        return new Response(JSON.stringify({ status: "ok" }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            ...SECURITY_HEADERS
+          }
         });
       }
 
-      // 2. 視覺化管理員後台網頁
+      // 4. 視覺化管理員後台網頁 (身分感知：未認證僅回傳純淨登入頁，認證通過才渲染儀表板)
       if (path === "/admin" || path === "/dashboard") {
-        return handleAdminDashboardHtml(request, env);
+        const token = await getAdminTokenFromRequest(request);
+        const isValid = await verifyAdminToken(token, env);
+        if (isValid) {
+          const adminUsername = (await getAdminUsernameFromToken(token, env)) || "Admin";
+          return new Response(renderAdminDashboardHtml(adminUsername), {
+            status: 200,
+            headers: HTML_SECURITY_HEADERS
+          });
+        }
+
+        const admins = await getAllAdmins(env);
+        const legacy = await getOrInitAdminAuth(env);
+        const isInitialized = admins.length > 0 || !!(legacy && legacy.adminDisabled);
+        return new Response(renderAdminLoginHtml(isInitialized), {
+          status: 200,
+          headers: HTML_SECURITY_HEADERS
+        });
       }
 
-      // 3. 管理員登入 (支援多管理員獨立登入，停用預設 ADMIN)
+      // 5. 系統初次部署設定 (當且僅當系統尚未初始化時允許建立管理員)
+      if (path === "/api/admin/initial-setup" && request.method === "POST") {
+        const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
+        const rateStatus = await getAdminRateLimitStatus(env, clientIp);
+        if (rateStatus.locked) {
+          return jsonResponse({
+            success: false,
+            message: `操作頻率過高，已被鎖定 15 分鐘 (剩餘約 ${rateStatus.remainingSec || 900} 秒)`
+          }, 429, {}, request);
+        }
+
+        const admins = await getAllAdmins(env);
+        const legacy = await getOrInitAdminAuth(env);
+        const isInitialized = admins.length > 0 || !!(legacy && legacy.adminDisabled);
+        if (isInitialized) {
+          return jsonResponse({
+            success: false,
+            message: "安全原則：系統已完成初始化，禁止重複進行初次設定！請直接登入。"
+          }, 403, {}, request);
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const uname = (body.username || "").trim();
+        const pword = (body.password || "").trim();
+
+        if (!uname || uname.length < 3 || uname.length > 30) {
+          return jsonResponse({ success: false, message: "管理員帳號需介於 3 至 30 個字元" }, 400, {}, request);
+        }
+        if (uname.toUpperCase() === "ADMIN") {
+          return jsonResponse({ success: false, message: "基於安全原則，管理員帳號不能使用通用預設的 ADMIN！" }, 400, {}, request);
+        }
+        if (!pword || pword.length < 8) {
+          return jsonResponse({ success: false, message: "為維護安全，管理員密碼長度需至少 8 碼！" }, 400, {}, request);
+        }
+        if (pword === "00000000") {
+          return jsonResponse({ success: false, message: "不能使用預設弱密碼 00000000！" }, 400, {}, request);
+        }
+
+        const { hash, salt } = await hashPassword(pword);
+        const adminObj = {
+          username: uname,
+          hash,
+          salt,
+          createdAt: Date.now(),
+          createdBy: "init"
+        };
+        await kvPut(env, `admin_user:${uname.toLowerCase()}`, JSON.stringify(adminObj));
+        await kvPut(env, "system:admins", JSON.stringify([uname]));
+        await kvPut(env, "system:admin_auth", JSON.stringify({
+          username: uname,
+          hash,
+          salt,
+          adminDisabled: true,
+          updatedAt: Date.now()
+        }));
+
+        await clearAdminLoginFailure(env, clientIp);
+        const adminToken = "adm_" + crypto.randomUUID();
+        await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
+          status: "active",
+          username: uname
+        }), 86400);
+
+        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`;
+        return jsonResponse({
+          success: true,
+          message: `專屬管理員帳號 [${uname}] 建立成功！`,
+          username: uname
+        }, 200, { "Set-Cookie": cookie }, request);
+      }
+
+      // 6. 管理員登入 (多層速率限制防護：自第1、2次失敗起實作累進延遲，5次鎖定15分鐘，HttpOnly Session Cookie)
       if (path === "/api/admin/login" && request.method === "POST") {
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
-        if (!(await checkAdminRateLimit(env, clientIp))) {
-          return jsonResponse({ success: false, message: "登入失敗次數過多，已被安全防護鎖定 15 分鐘" }, 429);
+        const rateStatus = await getAdminRateLimitStatus(env, clientIp);
+        if (rateStatus.locked) {
+          return jsonResponse({
+            success: false,
+            message: `登入失敗次數過多，已被安全防護鎖定 15 分鐘 (剩餘約 ${rateStatus.remainingSec || 900} 秒)`
+          }, 429, {}, request);
+        }
+
+        // 累進延遲防護 (Progressive Delay)，對第 1、2 次失敗嘗試提供速度限制
+        if (rateStatus.delayMs > 0) {
+          await new Promise(r => setTimeout(r, rateStatus.delayMs));
         }
 
         const body = await request.json().catch(() => ({}));
@@ -64,112 +201,95 @@ export default {
         const password = (body.password || "").trim();
 
         if (!inputUsername || !password) {
-          return jsonResponse({ success: false, message: "請輸入管理員帳號與密碼" }, 400);
+          return jsonResponse({ success: false, message: "請輸入管理員帳號與密碼" }, 400, {}, request);
         }
 
         const adminsList = await getAllAdmins(env);
         const legacyAuth = await getOrInitAdminAuth(env);
-        const isSystemInitialized = adminsList.length > 0 || legacyAuth.adminDisabled;
+        const isSystemInitialized = adminsList.length > 0 || !!(legacyAuth && legacyAuth.adminDisabled);
 
-        // 若輸入預設 ADMIN 帳號
-        if (inputUsername.toUpperCase() === "ADMIN") {
-          // 若已初始化並停用 ADMIN
-          if (isSystemInitialized) {
-            return jsonResponse({
-              success: false,
-              message: "安全原則：預設 ADMIN 帳號已永久停用！請使用您設定的專屬管理員帳號登入。"
-            }, 403);
-          }
-
-          // 尚未初始化：驗證預設密碼 00000000
-          const { hash } = await hashPassword(password, legacyAuth.salt);
-          if (!timingSafeEqual(hash, legacyAuth.hash)) {
-            return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401);
-          }
-
-          await clearAdminRateLimit(env, clientIp);
-          const tempToken = "temp_" + crypto.randomUUID();
-          await kvPut(env, `admin_temp:${tempToken}`, "require_change", 600); // 10分鐘有效
+        // 若輸入 ADMIN 且系統已初始化
+        if (inputUsername.toUpperCase() === "ADMIN" && isSystemInitialized) {
+          await recordAdminLoginFailure(env, clientIp);
+          await new Promise(r => setTimeout(r, 600)); // 時序延遲
           return jsonResponse({
-            success: true,
-            mustChangePassword: true,
-            mustSetupNewAdmin: true,
-            tempToken,
-            message: "首次登入：請設定專屬管理員名稱與密碼，設定完成後將永久停用預設 ADMIN 帳號！"
-          });
+            success: false,
+            message: "安全原則：預設 ADMIN 帳號已永久停用！請使用您設定的專屬管理員帳號登入。"
+          }, 403, {}, request);
         }
 
-        // 以自訂管理員名稱登入 (支援多管理員)
         const adminData = await findAdminUser(env, inputUsername);
         if (!adminData) {
-          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401);
+          await recordAdminLoginFailure(env, clientIp);
+          await new Promise(r => setTimeout(r, 600));
+          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401, {}, request);
         }
 
         const { hash } = await hashPassword(password, adminData.salt);
         if (!timingSafeEqual(hash, adminData.hash)) {
-          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401);
+          await recordAdminLoginFailure(env, clientIp);
+          await new Promise(r => setTimeout(r, 600));
+          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401, {}, request);
         }
 
-        await clearAdminRateLimit(env, clientIp);
+        await clearAdminLoginFailure(env, clientIp);
         const adminToken = "adm_" + crypto.randomUUID();
         await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
           status: "active",
           username: adminData.username
-        }), 86400); // 24小時有效
+        }), 86400);
 
+        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`;
         return jsonResponse({
           success: true,
-          mustChangePassword: false,
-          token: adminToken,
-          username: adminData.username
-        });
+          username: adminData.username,
+          message: "登入成功"
+        }, 200, { "Set-Cookie": cookie }, request);
       }
 
-      // 4. 設定 / 修改管理員帳號與密碼 (支援修改管理員名稱並停用預設 ADMIN)
+      // 7. 管理員登出 (註銷 Token 並清除 HttpOnly Cookie)
+      if (path === "/api/admin/logout" && request.method === "POST") {
+        const token = await getAdminTokenFromRequest(request);
+        if (token) {
+          await kvDelete(env, `admin_token:${token}`);
+        }
+        const clearCookie = `admin_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+        return jsonResponse({ success: true, message: "已安全登出" }, 200, { "Set-Cookie": clearCookie }, request);
+      }
+
+      // 8. 修改管理員帳號與密碼 (需管理員權限，支援自訂名稱與密碼，更新 Session Cookie)
       if (path === "/api/admin/change-password" && request.method === "POST") {
         const body = await request.json().catch(() => ({}));
-        const { tempToken, adminToken, newUsername, newPassword } = body;
+        const { newUsername, newPassword } = body;
 
-        let isAuthorized = false;
-        let isFirstSetup = false;
-        let authAdminName = null;
-        if (tempToken) {
-          const state = await kvGet(env, `admin_temp:${tempToken}`);
-          if (state === "require_change") {
-            isAuthorized = true;
-            isFirstSetup = true;
-          }
-        } else if (adminToken) {
-          isAuthorized = await verifyAdminToken(adminToken, env);
-          authAdminName = await getAdminUsernameFromToken(adminToken, env);
-        }
-
+        const currentToken = await getAdminTokenFromRequest(request);
+        const isAuthorized = await verifyAdminToken(currentToken, env);
         if (!isAuthorized) {
-          return jsonResponse({ success: false, message: "修改憑證權限已過期，請重新登入" }, 401);
+          return jsonResponse({ success: false, message: "修改憑證權限已過期，請重新登入" }, 401, {}, request);
         }
 
+        const authAdminName = (await getAdminUsernameFromToken(currentToken, env)) || "Admin";
         const cleanUname = (newUsername || "").trim();
-        if (isFirstSetup || cleanUname.length > 0) {
+        if (cleanUname.length > 0) {
           if (cleanUname.toUpperCase() === "ADMIN") {
-            return jsonResponse({ success: false, message: "新管理員名稱不能繼續使用預設的 ADMIN！請輸入自訂名稱。" }, 400);
+            return jsonResponse({ success: false, message: "管理員名稱不能使用預設的 ADMIN！請輸入自訂名稱。" }, 400, {}, request);
           }
-          if (cleanUname.length < 3) {
-            return jsonResponse({ success: false, message: "管理員名稱長度需至少 3 碼！" }, 400);
+          if (cleanUname.length < 3 || cleanUname.length > 30) {
+            return jsonResponse({ success: false, message: "管理員名稱長度需介於 3 至 30 碼！" }, 400, {}, request);
           }
         }
 
         if (!newPassword || newPassword.length < 6) {
-          return jsonResponse({ success: false, message: "新密碼長度需至少 6 位以上！" }, 400);
+          return jsonResponse({ success: false, message: "新密碼長度需至少 6 位以上！" }, 400, {}, request);
         }
 
         if (newPassword === "00000000") {
-          return jsonResponse({ success: false, message: "新密碼不能繼續使用預設的 00000000！" }, 400);
+          return jsonResponse({ success: false, message: "新密碼不能繼續使用弱密碼 00000000！" }, 400, {}, request);
         }
 
-        const legacyAuth = await getOrInitAdminAuth(env);
-        const finalUname = cleanUname || authAdminName || legacyAuth.username;
+        const finalUname = cleanUname || authAdminName;
 
-        // 使用 PBKDF2 重新隨機加鹽雜湊
+        // 使用 PBKDF2 10 萬次隨機加鹽雜湊
         const { hash, salt } = await hashPassword(newPassword);
 
         // 儲存至 admin_user
@@ -178,7 +298,7 @@ export default {
           hash,
           salt,
           createdAt: Date.now(),
-          createdBy: isFirstSetup ? "init" : (authAdminName || "system")
+          createdBy: authAdminName
         };
         await kvPut(env, `admin_user:${finalUname.toLowerCase()}`, JSON.stringify(adminObj));
 
@@ -189,37 +309,34 @@ export default {
 
         // 更新 system:admins 清單
         const currentAdmins = await getAllAdmins(env);
-        const filtered = currentAdmins.filter(a => a.toLowerCase() !== (authAdminName || "").toLowerCase());
+        const filtered = currentAdmins.filter(a => a.toLowerCase() !== authAdminName.toLowerCase());
         if (!filtered.some(a => a.toLowerCase() === finalUname.toLowerCase())) {
           filtered.push(finalUname);
         }
         await kvPut(env, "system:admins", JSON.stringify(filtered));
 
         // 更新 legacy system:admin_auth
-        const updatedAuth = {
+        await kvPut(env, "system:admin_auth", JSON.stringify({
           username: finalUname,
           hash,
           salt,
-          mustChangePassword: false,
-          adminDisabled: true, // 核心安全設定：設定完成後永久停用預設 ADMIN 權限
+          adminDisabled: true,
           updatedAt: Date.now()
-        };
-        await kvPut(env, "system:admin_auth", JSON.stringify(updatedAuth));
+        }));
 
-        // 註銷臨時權杖並簽發正式 Token
-        if (tempToken) await kvDelete(env, `admin_temp:${tempToken}`);
-        const finalToken = "adm_" + crypto.randomUUID();
+        // 更新 Token Session
+        const finalToken = currentToken || ("adm_" + crypto.randomUUID());
         await kvPut(env, `admin_token:${finalToken}`, JSON.stringify({
           status: "active",
           username: finalUname
         }), 86400);
 
+        const cookie = `admin_session=${finalToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`;
         return jsonResponse({
           success: true,
-          message: `專屬管理員帳號 [${finalUname}] 設定成功！預設 ADMIN 帳號已永久停用。`,
-          token: finalToken,
+          message: `管理員帳號 [${finalUname}] 密碼修改成功！`,
           username: finalUname
-        });
+        }, 200, { "Set-Cookie": cookie }, request);
       }
 
       // 管理員清單查詢 (多管理員功能)
@@ -1304,18 +1421,7 @@ async function getOrInitAdminAuth(env) {
       return data;
     } catch (_) {}
   }
-  // 初始預設密碼 00000000，使用隨機 Salt 與 PBKDF2 加密儲存
-  const { hash, salt } = await hashPassword("00000000");
-  const initial = {
-    username: "ADMIN",
-    hash,
-    salt,
-    mustChangePassword: true,
-    adminDisabled: false,
-    updatedAt: Date.now()
-  };
-  await kvPut(env, "system:admin_auth", JSON.stringify(initial));
-  return initial;
+  return null;
 }
 
 async function getAllAdmins(env) {
@@ -1344,6 +1450,7 @@ async function getAllAdmins(env) {
 
 async function findAdminUser(env, username) {
   const clean = (username || "").trim().toLowerCase();
+  if (!clean) return null;
   const raw = await kvGet(env, `admin_user:${clean}`);
   if (raw) {
     try { return JSON.parse(raw); } catch (_) {}
@@ -1368,25 +1475,49 @@ async function hashPassword(password, saltHex = null) {
   return { hash: bytesToHex(new Uint8Array(derivedBits)), salt: bytesToHex(salt) };
 }
 
-async function checkAdminRateLimit(env, clientIp) {
+// 累進延遲與鎖定狀態檢查 (對第 1、2 次嘗試亦提供速度限制與記錄保護)
+async function getAdminRateLimitStatus(env, clientIp) {
+  const key = `ratelimit:admin:${clientIp}`;
+  const raw = await kvGet(env, key);
+  if (!raw) return { failures: 0, locked: false, delayMs: 0 };
+  try {
+    const data = JSON.parse(raw);
+    const now = Date.now();
+    if (data.lockedUntil && now < data.lockedUntil) {
+      const remainingSec = Math.ceil((data.lockedUntil - now) / 1000);
+      return { failures: data.failures, locked: true, remainingSec };
+    }
+    const delayMs = Math.min((data.failures || 0) * 500, 2500);
+    return { failures: data.failures || 0, locked: false, delayMs, startTime: data.startTime };
+  } catch (_) {
+    return { failures: 0, locked: false, delayMs: 0 };
+  }
+}
+
+async function recordAdminLoginFailure(env, clientIp) {
   const key = `ratelimit:admin:${clientIp}`;
   const raw = await kvGet(env, key);
   const now = Date.now();
-  let count = 1;
+  let failures = 1;
+  let startTime = now;
   if (raw) {
     try {
       const data = JSON.parse(raw);
-      if (now - data.startTime < 15 * 60 * 1000) {
-        count = data.count + 1;
-        if (count > 5) return false;
+      if (now - (data.startTime || 0) < 15 * 60 * 1000) {
+        failures = (data.failures || 0) + 1;
+        startTime = data.startTime || now;
       }
     } catch (_) {}
   }
-  await kvPut(env, key, JSON.stringify({ count, startTime: now }), 900);
-  return true;
+  let lockedUntil = null;
+  if (failures >= 5) {
+    lockedUntil = now + 15 * 60 * 1000; // 鎖定 15 分鐘
+  }
+  await kvPut(env, key, JSON.stringify({ failures, startTime, lockedUntil }), 900);
+  return { failures, locked: failures >= 5 };
 }
 
-async function clearAdminRateLimit(env, clientIp) {
+async function clearAdminLoginFailure(env, clientIp) {
   await kvDelete(env, `ratelimit:admin:${clientIp}`);
 }
 
@@ -1395,16 +1526,18 @@ async function recordAndCheckRateLimit(env, key) {
   const raw = await kvGet(env, recordKey);
   const now = Date.now();
   let count = 1;
+  let startTime = now;
   if (raw) {
     try {
       const data = JSON.parse(raw);
       if (now - data.startTime < 15 * 60 * 1000) {
         count = data.count + 1;
+        startTime = data.startTime;
         if (count > 5) return false;
       }
     } catch (_) {}
   }
-  await kvPut(env, recordKey, JSON.stringify({ count, startTime: now }), 900);
+  await kvPut(env, recordKey, JSON.stringify({ count, startTime }), 900);
   return true;
 }
 
@@ -1442,7 +1575,43 @@ async function sha256(str) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
   return bytesToHex(new Uint8Array(buf));
 }
-function jsonResponse(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: CORS_HEADERS }); }
+
+function jsonResponse(data, status = 200, extraHeaders = {}, request = null) {
+  let isAdm = false;
+  let origin = null;
+  let selfOrigin = null;
+  if (request) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/admin") || url.pathname.startsWith("/admin")) {
+      isAdm = true;
+    }
+    origin = request.headers.get("Origin");
+    selfOrigin = url.origin;
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    ...SECURITY_HEADERS,
+    ...extraHeaders
+  };
+
+  if (isAdm) {
+    if (origin && selfOrigin && origin === selfOrigin) {
+      headers["Access-Control-Allow-Origin"] = selfOrigin;
+      headers["Access-Control-Allow-Credentials"] = "true";
+      headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+      headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+    }
+    headers["Vary"] = "Origin";
+  } else {
+    headers["Access-Control-Allow-Origin"] = origin || "*";
+    headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+    headers["Vary"] = "Origin";
+  }
+
+  return new Response(JSON.stringify(data), { status, headers });
+}
 
 async function kvGet(env, key) {
   if (env.RADAR_KV) return await env.RADAR_KV.get(key);
@@ -1484,9 +1653,23 @@ async function authenticate(request, env) {
   try { return JSON.parse(rawUser); } catch (_) { return null; }
 }
 
-async function verifyAdmin(request, env) {
+function getCookie(request, name) {
+  if (!request) return null;
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function getAdminTokenFromRequest(request) {
+  if (!request) return null;
   const authHeader = request.headers.get("Authorization") || "";
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  const bearer = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (bearer) return bearer;
+  return getCookie(request, "admin_session");
+}
+
+async function verifyAdmin(request, env) {
+  const token = await getAdminTokenFromRequest(request);
   return await verifyAdminToken(token, env);
 }
 
@@ -1508,8 +1691,8 @@ async function getAdminUsernameFromToken(token, env) {
   const status = await kvGet(env, `admin_token:${token}`);
   if (!status) return null;
   if (status === "active") {
-    const auth = await getOrInitAdminAuth(env);
-    return auth.username;
+    const admins = await getAllAdmins(env);
+    return admins[0] || "Admin";
   }
   try {
     const data = JSON.parse(status);
@@ -1530,10 +1713,103 @@ function escapeHtml(str) {
 }
 
 /**
- * 視覺化管理後台 HTML（內建強制修改密碼彈窗與安全轉義）
+ * 純淨管理員登入頁面 (未登入者僅回傳此頁面，不包含任何管理 API 路由或敏感邏輯)
  */
-function handleAdminDashboardHtml(request, env) {
-  const html = `<!DOCTYPE html>
+function renderAdminLoginHtml(isInitialized) {
+  return `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>購物雷達 - 管理員登入</title>
+  <style>
+    :root { --bg: #0b1120; --card: #1e293b; --primary: #38bdf8; --border: #334155; --text: #f8fafc; --err: #f87171; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 28px; width: 100%; max-width: 400px; box-shadow: 0 8px 30px rgba(0,0,0,0.4); }
+    .btn { background: var(--primary); color: #000; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; font-size: 15px; transition: 0.2s; }
+    .btn:hover { opacity: 0.9; }
+    .input { background: #070d18; border: 1px solid var(--border); color: var(--text); padding: 12px; border-radius: 8px; width: 100%; margin-bottom: 14px; font-size: 14px; }
+    .input:focus { outline: none; border-color: var(--primary); }
+    .err-msg { color: var(--err); font-size: 13px; margin-top: 12px; text-align: center; display: none; line-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin-bottom: 12px; text-align: center; color: var(--primary);">🛡️ 購物雷達管理系統</h2>
+    <p style="color: #94a3b8; font-size: 13px; margin-bottom: 20px; text-align: center;">
+      \${isInitialized ? "請輸入管理員帳號與密碼" : "系統初次部署：請設定您的專屬管理員帳號與密碼"}
+    </p>
+    <form id="authForm" onsubmit="handleAuth(event)">
+      <input type="text" id="uname" class="input" placeholder="管理員帳號" required autocomplete="username" />
+      <input type="password" id="pword" class="input" placeholder="\${isInitialized ? "管理員密碼" : "請設定管理員密碼 (至少8碼)"}" required autocomplete="current-password" />
+      \${isInitialized ? "" : '<input type="password" id="pword2" class="input" placeholder="再次確認密碼" required autocomplete="new-password" />'}
+      <button type="submit" id="submitBtn" class="btn">\${isInitialized ? "登入管理後台" : "建立專屬管理員"}</button>
+    </form>
+    <div id="errMsg" class="err-msg"></div>
+  </div>
+
+  <script>
+    async function handleAuth(e) {
+      e.preventDefault();
+      const u = document.getElementById("uname").value.trim();
+      const p = document.getElementById("pword").value.trim();
+      const p2El = document.getElementById("pword2");
+      const err = document.getElementById("errMsg");
+      const btn = document.getElementById("submitBtn");
+      err.style.display = "none";
+      if (!u || !p) return;
+
+      \${isInitialized ? "" : \`
+      const p2 = p2El ? p2El.value.trim() : "";
+      if (p !== p2) {
+        err.innerText = "兩次輸入的密碼不一致！";
+        err.style.display = "block";
+        return;
+      }
+      if (p.length < 8) {
+        err.innerText = "密碼長度需至少 8 碼！";
+        err.style.display = "block";
+        return;
+      }
+      \`}
+
+      btn.disabled = true;
+      btn.innerText = "驗證中...";
+      try {
+        const endpoint = \${isInitialized ? '"/api/admin/login"' : '"/api/admin/initial-setup"'};
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: u, password: p })
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.innerText = "驗證成功，載入後台...";
+          window.location.reload();
+        } else {
+          err.innerText = data.message || "驗證失敗";
+          err.style.display = "block";
+          btn.disabled = false;
+          btn.innerText = \${isInitialized ? '"登入管理後台"' : '"建立專屬管理員"'};
+        }
+      } catch (errExp) {
+        err.innerText = "連線失敗: " + errExp.message;
+        err.style.display = "block";
+        btn.disabled = false;
+        btn.innerText = \${isInitialized ? '"登入管理後台"' : '"建立專屬管理員"'};
+      }
+    }
+  </script>
+</body>
+</html>\`;
+}
+
+/**
+ * 視覺化管理員儀表板 HTML (僅在通過身分驗證後於伺服器端動態渲染，零 Token 存於 localStorage)
+ */
+function renderAdminDashboardHtml(adminUsername) {
+  const safeAdmin = escapeHtml(adminUsername || "Admin");
+  return `<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1553,6 +1829,7 @@ function handleAdminDashboardHtml(request, env) {
     .btn { background: var(--primary); color: #000; border: none; padding: 8px 16px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s; }
     .btn:hover { opacity: 0.9; }
     .input { background: #070d18; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 8px; width: 100%; margin-bottom: 12px; font-size: 14px; }
+    .input:focus { outline: none; border-color: var(--primary); }
     table { width: 100%; border-collapse: collapse; margin-top: 14px; }
     th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 9999; }
@@ -1560,231 +1837,178 @@ function handleAdminDashboardHtml(request, env) {
 </head>
 <body>
   <div class="container">
-    <!-- 登入卡片 -->
-    <div id="loginSection" class="card" style="max-width: 420px; margin: 80px auto;">
-      <h2 style="margin-bottom: 16px; text-align: center; color: var(--primary);">🛡️ 購物雷達管理員登入</h2>
-      <p style="color: #94a3b8; font-size: 13px; margin-bottom: 16px; text-align: center;">請輸入管理員帳號與密碼登入管理後台</p>
-      <input type="text" id="adminUser" class="input" placeholder="管理員帳號" value="" autocomplete="username" />
-      <input type="password" id="adminPass" class="input" placeholder="管理員密碼" value="" autocomplete="current-password" />
-      <button class="btn" style="width: 100%; padding: 12px;" onclick="doAdminLogin()">登入管理後台</button>
-      <p id="loginErr" style="color: var(--err); font-size: 12px; margin-top: 10px; text-align: center; display: none;"></p>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+      <div>
+        <h1 style="color: var(--primary); font-size: 22px;">📡 購物雷達 - 雲端推播管理系統</h1>
+        <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">\${safeAdmin}</strong></p>
+      </div>
+      <div>
+        <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal()">修改個人密碼</button>
+        <button class="btn" style="background:#475569; color:#fff;" onclick="logoutAdmin()">登出</button>
+      </div>
     </div>
 
-    <!-- 儀表板主要內容 -->
-    <div id="dashboardSection" style="display: none;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+    <div class="stats-grid">
+      <div class="stat-box"><div class="stat-val" id="totalDevices">0</div><div style="font-size:12px;color:#94a3b8;">註冊手機總數</div></div>
+      <div class="stat-box"><div class="stat-val" id="activeFcm">0</div><div style="font-size:12px;color:#94a3b8;">有效 FCM 推播裝置</div></div>
+      <div class="stat-box"><div class="stat-val" id="stdUsers">0</div><div style="font-size:12px;color:#94a3b8;">VIP 會員 (30分巡查)</div></div>
+      <div class="stat-box"><div class="stat-val" id="lowUsers">0</div><div style="font-size:12px;color:#94a3b8;">普通會員 (60分巡查)</div></div>
+    </div>
+
+    <!-- FCM HTTP v1 雲端推播憑證設定卡片 -->
+    <div class="card" style="border: 1px solid #0284c7;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
         <div>
-          <h1 style="color: var(--primary); font-size: 22px;">📡 購物雷達 - 雲端推播管理系統</h1>
-          <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">ADMIN</strong></p>
+          <h3 style="color: #38bdf8; font-size: 16px;">🔑 FCM HTTP v1 雲端推播設定 (現代 OAuth 2.0 驗證)</h3>
+          <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Google 官方標準規範，採用 Service Account 私鑰自動產生短期 Bearer Token</p>
         </div>
+        <span id="fcmKeyStatus" class="badge" style="background: #78350f; color: #fbbf24;">檢測中...</span>
+      </div>
+
+      <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 10px; margin-bottom: 14px; border: 1px dashed #334155;">
+        <h4 style="color: #f1f5f9; font-size: 13px; margin-bottom: 6px;">📋 3 步快速取得 Service Account JSON 憑證：</h4>
+        <ol style="font-size: 12px; color: #cbd5e1; padding-left: 20px; line-height: 20px;">
+          <li>前往 <a href="https://console.firebase.google.com/" target="_blank" style="color: #38bdf8; text-decoration: underline;">Firebase Console</a> 開啟您的專案。</li>
+          <li>進入 <strong>專案設定</strong> ➔ 點選 <strong>「服務帳戶」(Service accounts)</strong> 標籤頁。</li>
+          <li>點擊 <strong>「產生新的私密金鑰」(Generate new private key)</strong>，將下載的 <code>.json</code> 檔案在此上傳或貼上內容。</li>
+        </ol>
+      </div>
+
+      <div style="margin-bottom: 12px;">
+        <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">選擇 JSON 檔案 或 直接於下方貼上內容：</label>
+        <input type="file" id="saFileInput" accept=".json,application/json" class="input" style="padding: 6px; margin-bottom: 8px;" onchange="handleSaFileSelect(event)" />
+        <textarea id="saJsonInput" class="input" style="height: 100px; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="請貼上 Firebase 下載的 service-account.json 完整內容..."></textarea>
+      </div>
+
+      <div style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
+        <button class="btn" style="background: #334155; color: #fff;" onclick="doTestFcmV1()">🔍 測試 OAuth 2.0 授權</button>
+        <button class="btn" style="padding: 10px 20px;" onclick="doSaveFcmServiceAccount()">🚀 儲存並驗證 FCM v1 憑證</button>
+      </div>
+      <p id="fcmKeyMsg" style="font-size: 13px; margin-top: 10px; display: none; line-height: 18px;"></p>
+
+      <details style="margin-top: 14px; border-top: 1px solid #334155; padding-top: 10px;">
+        <summary style="font-size: 12px; color: #64748b; cursor: pointer;">舊版相容選項 (FCM Legacy Server Key)</summary>
+        <div style="margin-top: 8px; display: flex; gap: 10px;">
+          <input type="password" id="fcmLegacyKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="舊版 FCM Server Key (AAAA...)" />
+          <button class="btn" style="background: #334155; color: #fff; white-space: nowrap;" onclick="doSaveLegacyFcmKey()">儲存舊版金鑰</button>
+        </div>
+      </details>
+    </div>
+
+    <!-- 全域即時廣播推播卡片 -->
+    <div class="card">
+      <h3 style="margin-bottom: 12px;">📢 全域即時廣播推播測試</h3>
+      <div style="display: flex; gap: 10px;">
+        <input type="text" id="pushTitle" class="input" style="flex: 1;" placeholder="推播標題" />
+        <input type="text" id="pushBody" class="input" style="flex: 2;" placeholder="推播內文" />
+        <button class="btn" style="height: 42px;" onclick="sendBroadcastPush()">立即廣播</button>
+      </div>
+    </div>
+
+    <!-- 裝置與會員權限管理卡片 -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
         <div>
-          <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal(false)">修改個人密碼</button>
-          <button class="btn" style="background:#475569; color:#fff;" onclick="logoutAdmin()">登出</button>
+          <h3>📱 裝置與會員權限管理</h3>
+          <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">可勾選特定裝置發送推播測試，或切換 VIP / 普通會員巡查頻率</p>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn" style="background:#0284c7; color:#fff;" onclick="pushToSelectedDevices()">🎯 測試推送給勾選設備</button>
+          <button class="btn" style="background:#334155; color:#fff;" onclick="loadDevices()">🔄 重新整理</button>
         </div>
       </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 36px;"><input type="checkbox" id="selectAllDevices" onchange="toggleSelectAllDevices(this)" title="全選/取消全選" /></th>
+            <th>帳號名稱</th><th>電子信箱</th><th>會員等級 (巡查頻率)</th><th>FCM 推播狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="deviceTableBody"></tbody>
+      </table>
+    </div>
 
-      <div class="stats-grid">
-        <div class="stat-box"><div class="stat-val" id="totalDevices">0</div><div style="font-size:12px;color:#94a3b8;">註冊手機總數</div></div>
-        <div class="stat-box"><div class="stat-val" id="activeFcm">0</div><div style="font-size:12px;color:#94a3b8;">有效 FCM 推播裝置</div></div>
-        <div class="stat-box"><div class="stat-val" id="stdUsers">0</div><div style="font-size:12px;color:#94a3b8;">VIP 會員 (30分巡查)</div></div>
-        <div class="stat-box"><div class="stat-val" id="lowUsers">0</div><div style="font-size:12px;color:#94a3b8;">普通會員 (60分巡查)</div></div>
+    <!-- 多管理員管理卡片 -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h3 style="color: var(--primary);">👥 管理員帳號管理 (支援多管理員)</h3>
+          <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">各管理員可獨立登入，協同管理推播系統</p>
+        </div>
+        <button class="btn" style="background:#334155; color:#fff;" onclick="loadAdmins()">🔄 重新整理</button>
       </div>
 
-      <!-- FCM HTTP v1 雲端推播憑證設定卡片 -->
-      <div class="card" style="border: 1px solid #0284c7;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
-          <div>
-            <h3 style="color: #38bdf8; font-size: 16px;">🔑 FCM HTTP v1 雲端推播設定 (現代 OAuth 2.0 驗證)</h3>
-            <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Google 官方標準規範，採用 Service Account 私鑰自動產生短期 Bearer Token</p>
-          </div>
-          <span id="fcmKeyStatus" class="badge" style="background: #78350f; color: #fbbf24;">檢測中...</span>
+      <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 12px; margin-bottom: 14px; border: 1px solid #334155;">
+        <h4 style="font-size: 13px; color: #f1f5f9; margin-bottom: 8px;">➕ 新增管理員帳號</h4>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <input type="text" id="newAdminUname" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員帳號 (至少3碼)" />
+          <input type="password" id="newAdminPword" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員密碼 (至少6碼)" />
+          <button class="btn" style="height: 40px; white-space: nowrap;" onclick="doCreateAdmin()">新增管理員</button>
         </div>
-
-        <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 10px; margin-bottom: 14px; border: 1px dashed #334155;">
-          <h4 style="color: #f1f5f9; font-size: 13px; margin-bottom: 6px;">📋 3 步快速取得 Service Account JSON 憑證：</h4>
-          <ol style="font-size: 12px; color: #cbd5e1; padding-left: 20px; line-height: 20px;">
-            <li>前往 <a href="https://console.firebase.google.com/" target="_blank" style="color: #38bdf8; text-decoration: underline;">Firebase Console</a> 開啟您的專案。</li>
-            <li>進入 <strong>專案設定</strong> ➔ 點選 <strong>「服務帳戶」(Service accounts)</strong> 標籤頁。</li>
-            <li>點擊 <strong>「產生新的私密金鑰」(Generate new private key)</strong>，將下載的 <code>.json</code> 檔案在此上傳或貼上內容。</li>
-          </ol>
-        </div>
-
-        <div style="margin-bottom: 12px;">
-          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">選擇 JSON 檔案 或 直接於下方貼上內容：</label>
-          <input type="file" id="saFileInput" accept=".json,application/json" class="input" style="padding: 6px; margin-bottom: 8px;" onchange="handleSaFileSelect(event)" />
-          <textarea id="saJsonInput" class="input" style="height: 100px; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="請貼上 Firebase 下載的 service-account.json 完整內容..."></textarea>
-        </div>
-
-        <div style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
-          <button class="btn" style="background: #334155; color: #fff;" onclick="doTestFcmV1()">🔍 測試 OAuth 2.0 授權</button>
-          <button class="btn" style="padding: 10px 20px;" onclick="doSaveFcmServiceAccount()">🚀 儲存並驗證 FCM v1 憑證</button>
-        </div>
-        <p id="fcmKeyMsg" style="font-size: 13px; margin-top: 10px; display: none; line-height: 18px;"></p>
-
-        <!-- 摺疊：舊版 FCM Server Key (相容選項) -->
-        <details style="margin-top: 14px; border-top: 1px solid #334155; padding-top: 10px;">
-          <summary style="font-size: 12px; color: #64748b; cursor: pointer;">舊版相容選項 (FCM Legacy Server Key)</summary>
-          <div style="margin-top: 8px; display: flex; gap: 10px;">
-            <input type="password" id="fcmLegacyKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="舊版 FCM Server Key (AAAA...)" />
-            <button class="btn" style="background: #334155; color: #fff; white-space: nowrap;" onclick="doSaveLegacyFcmKey()">儲存舊版金鑰</button>
-          </div>
-        </details>
+        <p id="createAdminMsg" style="font-size: 12px; margin-top: 8px; display: none;"></p>
       </div>
 
-      <div class="card">
-        <h3 style="margin-bottom: 12px;">📢 全域即時廣播推播測試</h3>
-        <div style="display: flex; gap: 10px;">
-          <input type="text" id="pushTitle" class="input" style="flex: 1;" placeholder="推播標題" />
-          <input type="text" id="pushBody" class="input" style="flex: 2;" placeholder="推播內文" />
-          <button class="btn" style="height: 42px;" onclick="sendBroadcastPush()">立即廣播</button>
-        </div>
-      </div>
-
-      <!-- 裝置與會員權限管理卡片 -->
-      <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
-          <div>
-            <h3>📱 裝置與會員權限管理</h3>
-            <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">可勾選特定裝置發送推播測試，或切換 VIP / 普通會員巡查頻率</p>
-          </div>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button class="btn" style="background:#0284c7; color:#fff;" onclick="pushToSelectedDevices()">🎯 測試推送給勾選設備</button>
-            <button class="btn" style="background:#334155; color:#fff;" onclick="loadDevices()">🔄 重新整理</button>
-          </div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 36px;"><input type="checkbox" id="selectAllDevices" onchange="toggleSelectAllDevices(this)" title="全選/取消全選" /></th>
-              <th>帳號名稱</th><th>電子信箱</th><th>會員等級 (巡查頻率)</th><th>FCM 推播狀態</th><th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="deviceTableBody"></tbody>
-        </table>
-      </div>
-
-      <!-- 多管理員管理卡片 -->
-      <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
-          <div>
-            <h3 style="color: var(--primary);">👥 管理員帳號管理 (支援多管理員)</h3>
-            <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">各管理員可獨立登入，協同管理推播系統</p>
-          </div>
-          <button class="btn" style="background:#334155; color:#fff;" onclick="loadAdmins()">🔄 重新整理</button>
-        </div>
-
-        <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 12px; margin-bottom: 14px; border: 1px solid #334155;">
-          <h4 style="font-size: 13px; color: #f1f5f9; margin-bottom: 8px;">➕ 新增管理員帳號</h4>
-          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <input type="text" id="newAdminUname" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員帳號 (至少3碼)" />
-            <input type="password" id="newAdminPword" class="input" style="flex: 1; min-width: 140px; margin-bottom: 0;" placeholder="管理員密碼 (至少6碼)" />
-            <button class="btn" style="height: 40px; white-space: nowrap;" onclick="doCreateAdmin()">新增管理員</button>
-          </div>
-          <p id="createAdminMsg" style="font-size: 12px; margin-top: 8px; display: none;"></p>
-        </div>
-
-        <table>
-          <thead>
-            <tr><th>管理員帳號</th><th>建立時間</th><th>建立者</th><th>操作</th></tr>
-          </thead>
-          <tbody id="adminsTableBody"></tbody>
-        </table>
-      </div>
+      <table>
+        <thead>
+          <tr><th>管理員帳號</th><th>建立時間</th><th>建立者</th><th>操作</th></tr>
+        </thead>
+        <tbody id="adminsTableBody"></tbody>
+      </table>
     </div>
   </div>
 
-  <!-- 強制初始化 / 修改管理員帳密 Modal -->
+  <!-- 修改管理員密碼 Modal -->
   <div id="changePassModal" class="modal-overlay" style="display: none;">
     <div class="card" style="width: 100%; max-width: 440px; background: #1e293b;">
-      <h3 id="modalTitle" style="color: #fbbf24; margin-bottom: 8px;">⚠️ 安全要求：建立專屬管理員帳號</h3>
+      <h3 id="modalTitle" style="color: #38bdf8; margin-bottom: 8px;">🛠️ 修改管理員帳號與密碼</h3>
       <p id="modalDesc" style="font-size: 13px; color: #94a3b8; margin-bottom: 16px; line-height: 18px;">
-        目前檢測為初始預設密碼，為修復預設帳密漏洞，系統要求您立即設定專屬管理員名稱與密碼。設定完成後，預設 ADMIN 帳號將永久停用！
+        您可以變更管理員登入名稱或密碼。修改完成後將自動更新工作階段。
       </p>
-      <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">全新管理員名稱 (不可為 ADMIN)</label>
-      <input type="text" id="newAdminUser" class="input" placeholder="請輸入自訂管理員名稱 (至少 3 碼)" />
-      <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">全新密碼 (至少 6 碼，不可為 00000000)</label>
-      <input type="password" id="newPass1" class="input" placeholder="請輸入全新密碼" />
+      <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">管理員名稱</label>
+      <input type="text" id="newAdminUser" class="input" value="\${safeAdmin}" placeholder="請輸入自訂管理員名稱" />
+      <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">新密碼 (至少 6 碼)</label>
+      <input type="password" id="newPass1" class="input" placeholder="請輸入新密碼" />
       <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">再次確認密碼</label>
-      <input type="password" id="newPass2" class="input" placeholder="再次確認全新密碼" />
-      <button class="btn" style="width: 100%; padding: 12px;" onclick="doSubmitNewPassword()">確認儲存並進入後台</button>
-      <button id="btnCancelModal" class="btn" style="width: 100%; padding: 10px; margin-top: 8px; background: #334155; color: #fff; display: none;" onclick="closeChangePassModal()">取消</button>
+      <input type="password" id="newPass2" class="input" placeholder="再次確認新密碼" />
+      <button class="btn" style="width: 100%; padding: 12px;" onclick="doSubmitNewPassword()">確認儲存</button>
+      <button class="btn" style="width: 100%; padding: 10px; margin-top: 8px; background: #334155; color: #fff;" onclick="closeChangePassModal()">取消</button>
       <p id="changePassErr" style="color: var(--err); font-size: 12px; margin-top: 10px; text-align: center; display: none;"></p>
     </div>
   </div>
 
   <script>
-    let adminToken = localStorage.getItem("radar_admin_token");
-    let adminName = localStorage.getItem("radar_admin_name") || "ADMIN";
-    let currentTempToken = null;
-    let isMandatorySetup = false;
+    let idleTimer = null;
+    const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 分鐘無操作自動登出
 
-    if (adminToken) { showDashboard(); }
-
-    async function doAdminLogin() {
-      const u = document.getElementById("adminUser").value.trim();
-      const p = document.getElementById("adminPass").value.trim();
-      const err = document.getElementById("loginErr");
-      err.style.display = "none";
-
-      try {
-        const res = await fetch("/api/admin/login", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: u, password: p })
-        });
-        const data = await res.json();
-        if (data.success) {
-          if (data.mustChangePassword || data.mustSetupNewAdmin) {
-            currentTempToken = data.tempToken;
-            showChangePassModal(true);
-          } else {
-            adminToken = data.token;
-            adminName = data.username || u;
-            localStorage.setItem("radar_admin_token", adminToken);
-            localStorage.setItem("radar_admin_name", adminName);
-            showDashboard();
-          }
-        } else {
-          err.innerText = data.message || "登入失敗";
-          err.style.display = "block";
-        }
-      } catch (e) {
-        err.innerText = "連線失敗: " + e.message;
-        err.style.display = "block";
-      }
+    function resetIdleTimer() {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        alert("⏰ 您已超過 5 分鐘無任何操作，為維護後台安全，系統已自動為您登出。");
+        logoutAdmin();
+      }, IDLE_LIMIT_MS);
     }
 
-    function showChangePassModal(firstTime) {
-      isMandatorySetup = !!firstTime;
+    ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(evt => {
+      document.addEventListener(evt, resetIdleTimer, { passive: true });
+    });
+
+    async function logoutAdmin() {
+      if (idleTimer) clearTimeout(idleTimer);
+      try {
+        await fetch("/api/admin/logout", { method: "POST" });
+      } catch (_) {}
+      window.location.reload();
+    }
+
+    function showChangePassModal() {
       document.getElementById("changePassErr").style.display = "none";
       document.getElementById("newPass1").value = "";
       document.getElementById("newPass2").value = "";
-
-      const titleEl = document.getElementById("modalTitle");
-      const descEl = document.getElementById("modalDesc");
-      const userEl = document.getElementById("newAdminUser");
-      const cancelBtn = document.getElementById("btnCancelModal");
-
-      if (isMandatorySetup) {
-        titleEl.innerText = "⚠️ 安全要求：建立專屬管理員帳號";
-        titleEl.style.color = "#fbbf24";
-        descEl.innerText = "目前為初始預設密碼，基於安全原則，請設定專屬管理員名稱與密碼。設定完成後，預設 ADMIN 帳號將永久停用！";
-        userEl.value = "";
-        cancelBtn.style.display = "none";
-      } else {
-        titleEl.innerText = "🛠️ 修改管理員帳號與密碼";
-        titleEl.style.color = "#38bdf8";
-        descEl.innerText = "您可以變更管理員登入名稱或密碼。修改完成後請使用新憑證登入。";
-        userEl.value = localStorage.getItem("radar_admin_name") || "";
-        cancelBtn.style.display = "block";
-      }
-
       document.getElementById("changePassModal").style.display = "flex";
     }
 
     function closeChangePassModal() {
-      if (!isMandatorySetup) {
-        document.getElementById("changePassModal").style.display = "none";
-      }
+      document.getElementById("changePassModal").style.display = "none";
     }
 
     async function doSubmitNewPassword() {
@@ -1794,7 +2018,7 @@ function handleAdminDashboardHtml(request, env) {
       const err = document.getElementById("changePassErr");
       err.style.display = "none";
 
-      if (isMandatorySetup || u.length > 0) {
+      if (u.length > 0) {
         if (u.toUpperCase() === "ADMIN") {
           err.innerText = "管理員名稱不能為預設的 ADMIN！請輸入專屬名稱。";
           err.style.display = "block";
@@ -1824,26 +2048,15 @@ function handleAdminDashboardHtml(request, env) {
       }
 
       try {
-        const payload = {
-          tempToken: currentTempToken,
-          adminToken: adminToken,
-          newUsername: u,
-          newPassword: p1
-        };
         const res = await fetch("/api/admin/change-password", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ newUsername: u, newPassword: p1 })
         });
         const data = await res.json();
         if (data.success) {
-          alert(data.message || "管理員帳號密碼設定成功！");
-          document.getElementById("changePassModal").style.display = "none";
-          adminToken = data.token;
-          adminName = data.username || u;
-          localStorage.setItem("radar_admin_token", adminToken);
-          localStorage.setItem("radar_admin_name", adminName);
-          currentTempToken = null;
-          showDashboard();
+          alert(data.message || "管理員帳號密碼修改成功！");
+          window.location.reload();
         } else {
           err.innerText = data.message || "修改失敗";
           err.style.display = "block";
@@ -1852,44 +2065,6 @@ function handleAdminDashboardHtml(request, env) {
         err.innerText = "連線失敗: " + e.message;
         err.style.display = "block";
       }
-    }
-
-    let idleTimer = null;
-    const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 分鐘無操作自動登出
-
-    function resetIdleTimer() {
-      if (idleTimer) clearTimeout(idleTimer);
-      if (!adminToken) return;
-      idleTimer = setTimeout(() => {
-        if (adminToken) {
-          alert("⏰ 您已超過 5 分鐘無任何操作，為維護後台安全，系統已自動為您登出。");
-          logoutAdmin();
-        }
-      }, IDLE_LIMIT_MS);
-    }
-
-    ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(evt => {
-      document.addEventListener(evt, resetIdleTimer, { passive: true });
-    });
-
-    function logoutAdmin() {
-      if (idleTimer) clearTimeout(idleTimer);
-      localStorage.removeItem("radar_admin_token");
-      localStorage.removeItem("radar_admin_name");
-      adminToken = null;
-      currentTempToken = null;
-      document.getElementById("dashboardSection").style.display = "none";
-      document.getElementById("loginSection").style.display = "block";
-    }
-
-    function showDashboard() {
-      document.getElementById("loginSection").style.display = "none";
-      document.getElementById("dashboardSection").style.display = "block";
-      document.getElementById("currentAdminName").innerText = localStorage.getItem("radar_admin_name") || "ADMIN";
-      loadConfig();
-      loadDevices();
-      loadAdmins();
-      resetIdleTimer();
     }
 
     function handleSaFileSelect(e) {
@@ -1904,7 +2079,7 @@ function handleAdminDashboardHtml(request, env) {
 
     async function loadConfig() {
       try {
-        const res = await fetch("/api/admin/get-config", { headers: { "Authorization": "Bearer " + adminToken } });
+        const res = await fetch("/api/admin/get-config");
         if (res.status === 401) return logoutAdmin();
         const data = await res.json();
         const statusEl = document.getElementById("fcmKeyStatus");
@@ -1947,7 +2122,7 @@ function handleAdminDashboardHtml(request, env) {
       try {
         const res = await fetch("/api/admin/set-fcm-service-account", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ service_account: parsed })
         });
         const data = await res.json();
@@ -1973,9 +2148,7 @@ function handleAdminDashboardHtml(request, env) {
       msg.style.display = "block";
 
       try {
-        const res = await fetch("/api/admin/test-fcm-v1", {
-          method: "POST", headers: { "Authorization": "Bearer " + adminToken }
-        });
+        const res = await fetch("/api/admin/test-fcm-v1", { method: "POST" });
         const data = await res.json();
         if (data.success) {
           msg.style.color = "#34d399";
@@ -1995,7 +2168,8 @@ function handleAdminDashboardHtml(request, env) {
       if (!key) return alert("請輸入舊版 FCM Server Key");
       try {
         const res = await fetch("/api/admin/set-fcm-key", {
-          method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ fcm_server_key: key })
         });
         const data = await res.json();
@@ -2012,56 +2186,51 @@ function handleAdminDashboardHtml(request, env) {
     }
 
     async function loadDevices() {
-      const res = await fetch("/api/admin/devices", { headers: { "Authorization": "Bearer " + adminToken } });
-      if (res.status === 401) return logoutAdmin();
-      const data = await res.json();
-      const devices = data.devices || [];
+      try {
+        const res = await fetch("/api/admin/devices");
+        if (res.status === 401) return logoutAdmin();
+        const data = await res.json();
+        const devices = data.devices || [];
 
-      document.getElementById("totalDevices").innerText = devices.length;
-      document.getElementById("activeFcm").innerText = devices.filter(d => d.has_fcm).length;
-      document.getElementById("stdUsers").innerText = devices.filter(d => d.role !== "low").length;
-      document.getElementById("lowUsers").innerText = devices.filter(d => d.role === "low").length;
+        document.getElementById("totalDevices").innerText = devices.length;
+        document.getElementById("activeFcm").innerText = devices.filter(d => d.has_fcm).length;
+        document.getElementById("stdUsers").innerText = devices.filter(d => d.role !== "low").length;
+        document.getElementById("lowUsers").innerText = devices.filter(d => d.role === "low").length;
 
-      const master = document.getElementById("selectAllDevices");
-      if (master) master.checked = false;
+        const master = document.getElementById("selectAllDevices");
+        if (master) master.checked = false;
 
-      const tbody = document.getElementById("deviceTableBody");
-      tbody.innerHTML = "";
-      if (devices.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#94a3b8; padding:20px;">尚無連線裝置</td></tr>';
-        return;
-      }
-      devices.forEach(d => {
-        const isLow = d.role === "low";
-        const tr = document.createElement("tr");
-        const safeUsername = escapeHtml(d.username);
-        const safeEmail = escapeHtml(d.email || "-");
-        tr.innerHTML = \`
-          <td><input type="checkbox" class="device-select" value="\${safeUsername}" data-fcm="\${d.has_fcm}" /></td>
-          <td><strong>\${safeUsername}</strong></td>
-          <td style="color:#94a3b8; font-size:13px;">\${safeEmail}</td>
-          <td><span class="badge \${isLow ? 'badge-60' : 'badge-30'}">\${isLow ? '普通會員 (60分鐘)' : 'VIP 會員 (30分鐘)'}</span></td>
-          <td>\${d.has_fcm ? '<span style="color:#34d399;">● 已連線</span>' : '<span style="color:#94a3b8;">○ 未連線</span>'}</td>
-          <td>
-            <button class="btn" style="background:#0284c7; color:#fff; padding:4px 10px; font-size:12px; margin-right:6px;" onclick="pushToSingleDevice('\${safeUsername}')">
-              測試推送
-            </button>
-            <button class="btn" style="background:#334155; color:#fff; padding:4px 10px; font-size:12px;" onclick="toggleRole('\${safeUsername}', '\${isLow ? 'standard' : 'low'}')">
-              切換為 \${isLow ? 'VIP 會員' : '普通會員'}
-            </button>
-          </td>
-        \`;
-        tbody.appendChild(tr);
-      });
-    }
+        const tbody = document.getElementById("deviceTableBody");
+        tbody.innerHTML = "";
+        if (devices.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#94a3b8; padding:20px;">尚無連線裝置</td></tr>';
+          return;
+        }
+        devices.forEach(d => {
+          const isLow = d.role === "low";
+          const tr = document.createElement("tr");
+          const safeUsername = escapeHtml(d.username);
+          const safeEmail = escapeHtml(d.email || "-");
+          const roleBadge = '<span class="badge ' + (isLow ? 'badge-60' : 'badge-30') + '">' + (isLow ? '普通會員 (60分鐘)' : 'VIP 會員 (30分鐘)') + '</span>';
+          const fcmBadge = d.has_fcm ? '<span style="color:#34d399;">● 已連線</span>' : '<span style="color:#94a3b8;">○ 未連線</span>';
+          const actionHtml = '<button class="btn" style="background:#0284c7; color:#fff; padding:4px 10px; font-size:12px; margin-right:6px;" onclick="pushToSingleDevice(\'' + safeUsername + '\')">測試推送</button>' +
+            '<button class="btn" style="background:#334155; color:#fff; padding:4px 10px; font-size:12px;" onclick="toggleRole(\'' + safeUsername + '\', \'' + (isLow ? 'standard' : 'low') + '\')">切換為 ' + (isLow ? 'VIP 會員' : '普通會員') + '</button>';
 
-    function escapeHtml(s) {
-      return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+          tr.innerHTML = '<td><input type="checkbox" class="device-select" value="' + safeUsername + '" data-fcm="' + d.has_fcm + '" /></td>' +
+            '<td><strong>' + safeUsername + '</strong></td>' +
+            '<td style="color:#94a3b8; font-size:13px;">' + safeEmail + '</td>' +
+            '<td>' + roleBadge + '</td>' +
+            '<td>' + fcmBadge + '</td>' +
+            '<td>' + actionHtml + '</td>';
+          tbody.appendChild(tr);
+        });
+      } catch (_) {}
     }
 
     async function toggleRole(username, newRole) {
       await fetch("/api/admin/set-role", {
-        method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, role: newRole })
       });
       loadDevices();
@@ -2071,12 +2240,17 @@ function handleAdminDashboardHtml(request, env) {
       const title = document.getElementById("pushTitle").value.trim();
       const body = document.getElementById("pushBody").value.trim();
       if (!title || !body) return alert("請輸入標題與內容");
-      const res = await fetch("/api/admin/broadcast", {
-        method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
-        body: JSON.stringify({ title, body })
-      });
-      const data = await res.json();
-      alert(data.message || (data.success ? "推播發送成功" : "發送失敗"));
+      try {
+        const res = await fetch("/api/admin/broadcast", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, body })
+        });
+        const data = await res.json();
+        alert(data.message || (data.success ? "推播發送成功" : "發送失敗"));
+      } catch (e) {
+        alert("連線錯誤: " + e.message);
+      }
     }
 
     async function pushToSelectedDevices() {
@@ -2092,7 +2266,7 @@ function handleAdminDashboardHtml(request, env) {
       try {
         const res = await fetch("/api/admin/test-push-devices", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             usernames: unames,
             title: "🎉 購物雷達測試推播！",
@@ -2110,7 +2284,7 @@ function handleAdminDashboardHtml(request, env) {
       try {
         const res = await fetch("/api/admin/test-push-devices", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             usernames: [uname],
             title: "🎉 購物雷達設備測試推播！",
@@ -2126,11 +2300,11 @@ function handleAdminDashboardHtml(request, env) {
 
     async function loadAdmins() {
       try {
-        const res = await fetch("/api/admin/admins", { headers: { "Authorization": "Bearer " + adminToken } });
+        const res = await fetch("/api/admin/admins");
         if (res.status === 401) return logoutAdmin();
         const data = await res.json();
         const admins = data.admins || [];
-        const currentAdmin = localStorage.getItem("radar_admin_name") || "";
+        const currentAdmin = document.getElementById("currentAdminName") ? document.getElementById("currentAdminName").innerText.trim() : "";
         const tbody = document.getElementById("adminsTableBody");
         tbody.innerHTML = "";
         if (admins.length === 0) {
@@ -2176,7 +2350,7 @@ function handleAdminDashboardHtml(request, env) {
       try {
         const res = await fetch("/api/admin/create-admin", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: u, password: p })
         });
         const data = await res.json();
@@ -2204,7 +2378,7 @@ function handleAdminDashboardHtml(request, env) {
       try {
         const res = await fetch("/api/admin/delete-admin", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + adminToken },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: uname })
         });
         const data = await res.json();
@@ -2214,8 +2388,12 @@ function handleAdminDashboardHtml(request, env) {
         alert("連線錯誤: " + e.message);
       }
     }
+
+    loadConfig();
+    loadDevices();
+    loadAdmins();
+    resetIdleTimer();
   </script>
 </body>
 </html>`;
-  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff" } });
 }
