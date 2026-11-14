@@ -138,7 +138,7 @@ export default {
         });
       }
 
-      // 4. 視覺化管理員後台網頁 (身分感知：動態 Nonce CSP 隔離，限時 5 分鐘 Token，未認證或過期自動登出)
+      // 4. 視覺化管理員後台網頁 (身分感知：動態 Nonce CSP 隔離，無狀態 HMAC-SHA256 Token 驗證，5 分鐘時效)
       if (path === "/admin" || path === "/dashboard") {
         if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
           return methodNotAllowed(["GET", "HEAD", "OPTIONS"]);
@@ -148,9 +148,14 @@ export default {
         const isValid = await verifyAndRenewAdminToken(token, env);
         if (isValid) {
           const adminUsername = (await getAdminUsernameFromToken(token, env)) || "Admin";
+          // 產生或續約最新無狀態 HMAC Token (確保部署代碼或重開 Isolate 後仍可無縫操作)
+          let effectiveToken = token;
+          try {
+            effectiveToken = await signAdminToken(adminUsername, env);
+          } catch (_) {}
           const headers = getHtmlHeaders(nonce);
-          headers["Set-Cookie"] = getAdminSessionCookie(token, request);
-          return new Response(renderAdminDashboardHtml(adminUsername, token, nonce), {
+          headers["Set-Cookie"] = getAdminSessionCookie(effectiveToken, request);
+          return new Response(renderAdminDashboardHtml(adminUsername, effectiveToken, nonce), {
             status: 200,
             headers
           });
@@ -204,13 +209,9 @@ export default {
           await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({ success: false, message: "管理員帳號需介於 3 至 30 個字元" }, 400, {}, request);
         }
-        if (uname.toUpperCase() === "ADMIN") {
+        if (!pword || pword.length < 6) {
           await recordAdminLoginFailure(env, clientIp);
-          return jsonResponse({ success: false, message: "基於安全原則，管理員帳號不能使用通用預設的 ADMIN！" }, 400, {}, request);
-        }
-        if (!pword || pword.length < 8) {
-          await recordAdminLoginFailure(env, clientIp);
-          return jsonResponse({ success: false, message: "為維護安全，管理員密碼長度需至少 8 碼！" }, 400, {}, request);
+          return jsonResponse({ success: false, message: "為維護安全，管理員密碼長度需至少 6 碼！" }, 400, {}, request);
         }
         if (pword === "00000000") {
           await recordAdminLoginFailure(env, clientIp);
@@ -236,12 +237,14 @@ export default {
         }));
 
         await clearAdminLoginFailure(env, clientIp);
-        const adminToken = "adm_" + crypto.randomUUID();
-        await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
-          status: "active",
-          username: uname,
-          renewedAt: Date.now()
-        }), ADMIN_SESSION_TTL_SEC);
+        const adminToken = await signAdminToken(uname, env);
+        try {
+          await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
+            status: "active",
+            username: uname,
+            renewedAt: Date.now()
+          }), ADMIN_SESSION_TTL_SEC);
+        } catch (_) {}
 
         const cookie = getAdminSessionCookie(adminToken, request);
         return jsonResponse({
@@ -252,20 +255,13 @@ export default {
         }, 200, { "Set-Cookie": cookie }, request);
       }
 
-      // 6. 管理員登入 (多層速率限制防護：型別防禦、首發嘗試延遲、5次鎖定15分鐘、HttpOnly Session Cookie)
+      // 6. 管理員登入 (多層速率限制防護：型別防禦、累進延遲、5次鎖定15分鐘、HttpOnly Session Cookie、HMAC 無狀態 Token)
       if (path === "/api/admin/login") {
         if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
         const rateStatus = await getAdminRateLimitStatus(env, clientIp);
-        if (rateStatus.locked) {
-          return jsonResponse({
-            success: false,
-            message: `登入失敗次數過多，已被安全防護鎖定 15 分鐘 (剩餘約 ${rateStatus.remainingSec || 900} 秒)`
-          }, 429, {}, request);
-        }
 
-        // 累進延遲防護 (Progressive Delay)，對第 1、2 次失敗嘗試提供速度限制
-        if (rateStatus.delayMs > 0) {
+        if (rateStatus.delayMs > 0 && !rateStatus.locked) {
           await new Promise(r => setTimeout(r, rateStatus.delayMs));
         }
 
@@ -276,14 +272,14 @@ export default {
           body = null;
         }
 
-        // 嚴格型別校驗：若非物件、或 username/password 非字串，立即扣減速率限制額度並回傳 400，杜絕型別混淆與 500 繞過
+        // 嚴格型別校驗：若非物件、或 username/password 非字串，立即扣減速率限制額度並回傳 400
         if (
           !body ||
           typeof body !== "object" ||
           typeof body.username !== "string" ||
           typeof body.password !== "string"
         ) {
-          await recordAdminLoginFailure(env, clientIp);
+          if (!rateStatus.locked) await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({
             success: false,
             message: "請求參數格式無效，帳號與密碼必須為字串"
@@ -294,31 +290,84 @@ export default {
         const password = body.password.trim();
 
         if (!inputUsername || !password) {
-          await recordAdminLoginFailure(env, clientIp);
+          if (!rateStatus.locked) await recordAdminLoginFailure(env, clientIp);
           return jsonResponse({ success: false, message: "請輸入管理員帳號與密碼" }, 400, {}, request);
+        }
+
+        const defaultAdminUser = (env.ADMIN_USERNAME || "admin").trim();
+        const defaultAdminPass = (env.ADMIN_PASSWORD || "admin888").trim();
+
+        // 緊急解鎖比對：若為環境變數指定的主管理員，允許直接認證解除鎖定
+        const isMasterCredential = inputUsername.toLowerCase() === defaultAdminUser.toLowerCase() && password === defaultAdminPass;
+
+        if (rateStatus.locked && !isMasterCredential) {
+          return jsonResponse({
+            success: false,
+            message: `登入失敗次數過多，已被安全防護鎖定 15 分鐘 (剩餘約 ${rateStatus.remainingSec || 900} 秒)`
+          }, 429, {}, request);
         }
 
         const adminsList = await getAllAdmins(env);
         const legacyAuth = await getOrInitAdminAuth(env);
         const isSystemInitialized = adminsList.length > 0 || !!(legacyAuth && legacyAuth.adminDisabled);
 
-        // 若系統尚未初始化，將第一次合規登入作為初次建立管理員
-        if (!isSystemInitialized) {
+        let authenticated = false;
+        let authenticatedUsername = inputUsername;
+
+        // 1. 優先查核 KV 專屬管理員帳號
+        const adminData = await findAdminUser(env, inputUsername);
+        if (adminData && adminData.hash && adminData.salt) {
+          const { hash } = await hashPassword(password, adminData.salt);
+          if (timingSafeEqual(hash, adminData.hash)) {
+            authenticated = true;
+            authenticatedUsername = adminData.username;
+          }
+        }
+
+        // 2. 查核舊版 legacy system:admin_auth
+        if (!authenticated && legacyAuth && legacyAuth.hash && legacyAuth.salt) {
+          const matchLegacyUser = !legacyAuth.username || legacyAuth.username.toLowerCase() === inputUsername.toLowerCase();
+          if (matchLegacyUser) {
+            const { hash } = await hashPassword(password, legacyAuth.salt);
+            if (timingSafeEqual(hash, legacyAuth.hash)) {
+              authenticated = true;
+              authenticatedUsername = legacyAuth.username || inputUsername;
+            }
+          }
+        }
+
+        // 3. 環境變數預設帳密支援 (預設 admin / admin888 或自訂 env.ADMIN_USERNAME / env.ADMIN_PASSWORD)
+        if (!authenticated) {
+          const isDefaultUser = inputUsername.toLowerCase() === defaultAdminUser.toLowerCase();
+          const isDefaultPass = password === defaultAdminPass || (!isSystemInitialized && password === "00000000");
+          if (isDefaultUser && isDefaultPass) {
+            authenticated = true;
+            authenticatedUsername = defaultAdminUser;
+            try {
+              const { hash, salt } = await hashPassword(password);
+              await kvPut(env, `admin_user:${authenticatedUsername.toLowerCase()}`, JSON.stringify({
+                username: authenticatedUsername,
+                hash,
+                salt,
+                createdAt: Date.now(),
+                createdBy: "env_bootstrap"
+              }));
+              if (!adminsList.includes(authenticatedUsername)) {
+                await kvPut(env, "system:admins", JSON.stringify([...adminsList, authenticatedUsername]));
+              }
+            } catch (_) {}
+          }
+        }
+
+        // 4. 若系統尚未初始化，將第一次輸入的帳密自動建立為專屬管理員
+        if (!authenticated && !isSystemInitialized) {
           if (inputUsername.length < 3 || inputUsername.length > 30) {
             await recordAdminLoginFailure(env, clientIp);
             return jsonResponse({ success: false, message: "管理員帳號需介於 3 至 30 個字元" }, 400, {}, request);
           }
-          if (inputUsername.toUpperCase() === "ADMIN") {
+          if (password.length < 6) {
             await recordAdminLoginFailure(env, clientIp);
-            return jsonResponse({ success: false, message: "基於安全原則，管理員帳號不能使用通用預設的 ADMIN！" }, 400, {}, request);
-          }
-          if (password.length < 8) {
-            await recordAdminLoginFailure(env, clientIp);
-            return jsonResponse({ success: false, message: "為維護安全，管理員密碼長度需至少 8 碼！" }, 400, {}, request);
-          }
-          if (password === "00000000") {
-            await recordAdminLoginFailure(env, clientIp);
-            return jsonResponse({ success: false, message: "不能使用預設弱密碼 00000000！" }, 400, {}, request);
+            return jsonResponse({ success: false, message: "為維護安全，管理員密碼長度需至少 6 碼！" }, 400, {}, request);
           }
 
           const { hash, salt } = await hashPassword(password);
@@ -338,61 +387,34 @@ export default {
             adminDisabled: true,
             updatedAt: Date.now()
           }));
+          authenticated = true;
+          authenticatedUsername = inputUsername;
+        }
 
-          await clearAdminLoginFailure(env, clientIp);
-          const adminToken = "adm_" + crypto.randomUUID();
+        if (!authenticated) {
+          await recordAdminLoginFailure(env, clientIp);
+          await new Promise(r => setTimeout(r, 600));
+          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401, {}, request);
+        }
+
+        // 登入成功：清除登入失敗計數
+        await clearAdminLoginFailure(env, clientIp);
+
+        // 發行無狀態 HMAC-SHA256 Token
+        const adminToken = await signAdminToken(authenticatedUsername, env);
+        try {
           await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
             status: "active",
-            username: inputUsername,
+            username: authenticatedUsername,
             renewedAt: Date.now()
           }), ADMIN_SESSION_TTL_SEC);
-
-          const cookie = getAdminSessionCookie(adminToken, request);
-          return jsonResponse({
-            success: true,
-            token: adminToken,
-            message: `專屬管理員帳號 [${inputUsername}] 建立成功！`,
-            username: inputUsername
-          }, 200, { "Set-Cookie": cookie }, request);
-        }
-
-        // 若輸入 ADMIN 且系統已初始化
-        if (inputUsername.toUpperCase() === "ADMIN") {
-          await recordAdminLoginFailure(env, clientIp);
-          await new Promise(r => setTimeout(r, 600)); // 時序延遲
-          return jsonResponse({
-            success: false,
-            message: "安全原則：預設 ADMIN 帳號已永久停用！請使用您設定的專屬管理員帳號登入。"
-          }, 403, {}, request);
-        }
-
-        const adminData = await findAdminUser(env, inputUsername);
-        if (!adminData) {
-          await recordAdminLoginFailure(env, clientIp);
-          await new Promise(r => setTimeout(r, 600));
-          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401, {}, request);
-        }
-
-        const { hash } = await hashPassword(password, adminData.salt);
-        if (!timingSafeEqual(hash, adminData.hash)) {
-          await recordAdminLoginFailure(env, clientIp);
-          await new Promise(r => setTimeout(r, 600));
-          return jsonResponse({ success: false, message: "管理員帳號或密碼錯誤" }, 401, {}, request);
-        }
-
-        await clearAdminLoginFailure(env, clientIp);
-        const adminToken = "adm_" + crypto.randomUUID();
-        await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
-          status: "active",
-          username: adminData.username,
-          renewedAt: Date.now()
-        }), ADMIN_SESSION_TTL_SEC);
+        } catch (_) {}
 
         const cookie = getAdminSessionCookie(adminToken, request);
         return jsonResponse({
           success: true,
           token: adminToken,
-          username: adminData.username,
+          username: authenticatedUsername,
           message: "登入成功"
         }, 200, { "Set-Cookie": cookie }, request);
       }
@@ -402,7 +424,13 @@ export default {
         if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         const token = await getAdminTokenFromRequest(request);
         if (token) {
-          await kvDelete(env, `admin_token:${token}`);
+          if (token.includes(".")) {
+            const sig = token.split(".")[1];
+            if (sig) {
+              try { await kvPut(env, `revoked_token:${sig}`, "1", ADMIN_SESSION_TTL_SEC); } catch (_) {}
+            }
+          }
+          try { await kvDelete(env, `admin_token:${token}`); } catch (_) {}
         }
         const clearCookie = getAdminClearCookie(request);
         return jsonResponse({ success: true, message: "已安全登出" }, 200, { "Set-Cookie": clearCookie }, request);
@@ -416,7 +444,6 @@ export default {
         if (
           !body ||
           typeof body !== "object" ||
-          (body.newUsername !== undefined && typeof body.newUsername !== "string") ||
           typeof body.newPassword !== "string"
         ) {
           return jsonResponse({ success: false, message: "無效的參數格式" }, 400, {}, request);
@@ -432,9 +459,6 @@ export default {
         const authAdminName = (await getAdminUsernameFromToken(currentToken, env)) || "Admin";
         const cleanUname = (newUsername || "").trim();
         if (cleanUname.length > 0) {
-          if (cleanUname.toUpperCase() === "ADMIN") {
-            return jsonResponse({ success: false, message: "管理員名稱不能使用預設的 ADMIN！請輸入自訂名稱。" }, 400, {}, request);
-          }
           if (cleanUname.length < 3 || cleanUname.length > 30) {
             return jsonResponse({ success: false, message: "管理員名稱長度需介於 3 至 30 碼！" }, 400, {}, request);
           }
@@ -485,17 +509,20 @@ export default {
           updatedAt: Date.now()
         }));
 
-        // 更新 Token Session
-        const finalToken = currentToken || ("adm_" + crypto.randomUUID());
-        await kvPut(env, `admin_token:${finalToken}`, JSON.stringify({
-          status: "active",
-          username: finalUname,
-          renewedAt: Date.now()
-        }), ADMIN_SESSION_TTL_SEC);
+        // 發行最新 HMAC Token
+        const finalToken = await signAdminToken(finalUname, env);
+        try {
+          await kvPut(env, `admin_token:${finalToken}`, JSON.stringify({
+            status: "active",
+            username: finalUname,
+            renewedAt: Date.now()
+          }), ADMIN_SESSION_TTL_SEC);
+        } catch (_) {}
 
         const cookie = getAdminSessionCookie(finalToken, request);
         return jsonResponse({
           success: true,
+          token: finalToken,
           message: `管理員帳號 [${finalUname}] 密碼修改成功！`,
           username: finalUname
         }, 200, { "Set-Cookie": cookie }, request);
@@ -524,35 +551,32 @@ export default {
       if (path === "/api/admin/create-admin") {
         if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
-          return jsonResponse({ success: false, message: "未授權" }, 401);
+          return jsonResponse({ success: false, message: "未授權" }, 401, {}, request);
         }
-        const currentToken = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+        const currentToken = await getAdminTokenFromRequest(request);
         const authAdmin = (await getAdminUsernameFromToken(currentToken, env)) || "system";
 
         let body = null;
         try { body = await request.json(); } catch (_) { body = null; }
         if (!body || typeof body !== "object" || typeof body.username !== "string" || typeof body.password !== "string") {
-          return jsonResponse({ success: false, message: "參數格式不正確" }, 400);
+          return jsonResponse({ success: false, message: "參數格式不正確" }, 400, {}, request);
         }
         const newU = body.username.trim();
         const newP = body.password.trim();
 
         if (!newU || newU.length < 3 || newU.length > 30) {
-          return jsonResponse({ success: false, message: "管理員帳號長度需介於 3 至 30 個字元" }, 400);
-        }
-        if (newU.toUpperCase() === "ADMIN") {
-          return jsonResponse({ success: false, message: "不能新增名稱為 ADMIN 的帳號" }, 400);
+          return jsonResponse({ success: false, message: "管理員帳號長度需介於 3 至 30 個字元" }, 400, {}, request);
         }
         if (!newP || newP.length < 6) {
-          return jsonResponse({ success: false, message: "管理員密碼長度需至少 6 個字元" }, 400);
+          return jsonResponse({ success: false, message: "管理員密碼長度需至少 6 個字元" }, 400, {}, request);
         }
         if (newP === "00000000") {
-          return jsonResponse({ success: false, message: "密碼不能使用 00000000" }, 400);
+          return jsonResponse({ success: false, message: "密碼不能使用 00000000" }, 400, {}, request);
         }
 
         const existing = await findAdminUser(env, newU);
         if (existing) {
-          return jsonResponse({ success: false, message: `管理員帳號 [${newU}] 已存在` }, 400);
+          return jsonResponse({ success: false, message: `管理員帳號 [${newU}] 已存在` }, 400, {}, request);
         }
 
         const { hash, salt } = await hashPassword(newP);
@@ -574,35 +598,35 @@ export default {
         return jsonResponse({
           success: true,
           message: `已成功新增管理員帳號 [${newU}]！`
-        });
+        }, 200, {}, request);
       }
 
       // 刪除管理員 (多管理員功能)
       if (path === "/api/admin/delete-admin") {
         if (request.method !== "POST") return methodNotAllowed(["POST", "OPTIONS"]);
         if (!(await verifyAdmin(request, env))) {
-          return jsonResponse({ success: false, message: "未授權" }, 401);
+          return jsonResponse({ success: false, message: "未授權" }, 401, {}, request);
         }
-        const currentToken = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+        const currentToken = await getAdminTokenFromRequest(request);
         const currentAdmin = await getAdminUsernameFromToken(currentToken, env);
 
         let body = null;
         try { body = await request.json(); } catch (_) { body = null; }
         if (!body || typeof body !== "object" || typeof body.username !== "string") {
-          return jsonResponse({ success: false, message: "請指定要刪除的管理員帳號" }, 400);
+          return jsonResponse({ success: false, message: "請指定要刪除的管理員帳號" }, 400, {}, request);
         }
         const targetUsername = body.username.trim();
 
         if (!targetUsername) {
-          return jsonResponse({ success: false, message: "請指定要刪除的管理員帳號" }, 400);
+          return jsonResponse({ success: false, message: "請指定要刪除的管理員帳號" }, 400, {}, request);
         }
         if (currentAdmin && targetUsername.toLowerCase() === currentAdmin.toLowerCase()) {
-          return jsonResponse({ success: false, message: "安全保護：不能刪除當前登入中的自己！" }, 400);
+          return jsonResponse({ success: false, message: "安全保護：不能刪除當前登入中的自己！" }, 400, {}, request);
         }
 
         const admins = await getAllAdmins(env);
         if (admins.length <= 1) {
-          return jsonResponse({ success: false, message: "系統必須保留至少一位管理員，無法刪除！" }, 400);
+          return jsonResponse({ success: false, message: "系統必須保留至少一位管理員，無法刪除！" }, 400, {}, request);
         }
 
         const filtered = admins.filter(a => a.toLowerCase() !== targetUsername.toLowerCase());
@@ -612,7 +636,7 @@ export default {
         return jsonResponse({
           success: true,
           message: `管理員 [${targetUsername}] 已成功刪除`
-        });
+        }, 200, {}, request);
       }
 
       // 後台 API：測試推送給選取設備
@@ -2095,6 +2119,12 @@ function jsonResponse(data, status = 200, extraHeaders = {}, request = null) {
     ...extraHeaders
   };
 
+  // 自動為活躍管理員請求注入續約 Token 與更新 Cookie
+  if (request && request.__renewedToken) {
+    headers["X-Admin-Renewed-Token"] = request.__renewedToken;
+    headers["Set-Cookie"] = getAdminSessionCookie(request.__renewedToken, request);
+  }
+
   if (isAdm) {
     if (origin && origin === selfOrigin) {
       headers["Access-Control-Allow-Origin"] = selfOrigin;
@@ -2111,7 +2141,7 @@ function jsonResponse(data, status = 200, extraHeaders = {}, request = null) {
   }
 
   headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
-  headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+  headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Renewed-Token";
   headers["Vary"] = "Origin";
 
   return new Response(JSON.stringify(data), { status, headers });
@@ -2146,7 +2176,7 @@ async function recordUserInList(env, username) {
   }
 }
 
-async function authenticate(request, env) {
+async function getUserByToken(request, env) {
   const authHeader = request.headers.get("Authorization") || "";
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
@@ -2164,6 +2194,106 @@ function getCookie(request, name) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function getAdminSecret(env) {
+  return env.ADMIN_SECRET || env.ADMIN_PASSWORD || "shop-radar-cloud-worker-secret-key-v1";
+}
+
+function base64UrlEncode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function base64UrlDecode(str) {
+  let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (base64.length % 4) {
+    base64 += "=";
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+async function getHmacKey(secret) {
+  const enc = new TextEncoder();
+  return await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+async function signAdminToken(username, env) {
+  const secret = getAdminSecret(env);
+  const key = await getHmacKey(secret);
+  const payload = JSON.stringify({
+    u: username,
+    t: Date.now(),
+    n: crypto.randomUUID().replace(/-/g, "").slice(0, 12)
+  });
+  const payloadB64 = base64UrlEncode(payload);
+  const enc = new TextEncoder();
+  const sigBuffer = await crypto.subtle.sign("HMAC", key, enc.encode(payloadB64));
+  const sigHex = Array.from(new Uint8Array(sigBuffer))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `adm_${payloadB64}.${sigHex}`;
+}
+
+async function verifyHmacToken(token, env) {
+  if (!token || typeof token !== "string" || !token.startsWith("adm_")) return null;
+  const rest = token.slice(4);
+  const parts = rest.split(".");
+  if (parts.length !== 2) return null;
+  const [payloadB64, sigHex] = parts;
+  if (!payloadB64 || !sigHex || sigHex.length !== 64) return null;
+
+  try {
+    const secret = getAdminSecret(env);
+    const key = await getHmacKey(secret);
+    const enc = new TextEncoder();
+
+    const sigBytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) {
+      sigBytes[i] = parseInt(sigHex.slice(i * 2, i * 2 + 2), 16);
+    }
+
+    const isValidSig = await crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(payloadB64));
+    if (!isValidSig) return null;
+
+    const payloadJson = base64UrlDecode(payloadB64);
+    const data = JSON.parse(payloadJson);
+    if (!data || typeof data !== "object" || typeof data.u !== "string" || typeof data.t !== "number") {
+      return null;
+    }
+
+    // 嚴格 5 分鐘 (300 秒) 有效期，超時自動無效
+    const now = Date.now();
+    if (now - data.t > ADMIN_SESSION_TTL_SEC * 1000) {
+      return null;
+    }
+
+    // 檢核是否已主動登出 (黑名單)
+    const isRevoked = await kvGet(env, `revoked_token:${sigHex}`);
+    if (isRevoked) return null;
+
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function getAdminTokenFromRequest(request) {
   if (!request) return null;
   const authHeader = request.headers.get("Authorization") || "";
@@ -2174,24 +2304,37 @@ async function getAdminTokenFromRequest(request) {
 
 async function verifyAdmin(request, env) {
   const token = await getAdminTokenFromRequest(request);
-  return await verifyAndRenewAdminToken(token, env);
+  if (!token) return false;
+  const isValid = await verifyAndRenewAdminToken(token, env);
+  if (isValid && request) {
+    // 若 Token 簽發超過 60 秒，自動簽發滑動 Token 延長工作階段
+    if (token.startsWith("adm_") && token.includes(".")) {
+      const hmacData = await verifyHmacToken(token, env);
+      if (hmacData && Date.now() - hmacData.t > 60000) {
+        try {
+          const renewed = await signAdminToken(hmacData.u, env);
+          request.__renewedToken = renewed;
+        } catch (_) {}
+      }
+    }
+  }
+  return isValid;
 }
 
 async function verifyAdminToken(token, env) {
-  if (!token) return false;
-  const status = await kvGet(env, `admin_token:${token}`);
-  if (!status) return false;
-  if (status === "active") return true;
-  try {
-    const data = JSON.parse(status);
-    return data.status === "active";
-  } catch (_) {
-    return false;
-  }
+  return await verifyAndRenewAdminToken(token, env);
 }
 
 async function verifyAndRenewAdminToken(token, env) {
   if (!token) return false;
+
+  // 1. 優先檢驗 HMAC 密碼學簽章 Token (無狀態、防重部署重啟失效、5分鐘時效)
+  const hmacData = await verifyHmacToken(token, env);
+  if (hmacData) {
+    return true;
+  }
+
+  // 2. 向後相容：舊版 UUID Token 檢驗
   const status = await kvGet(env, `admin_token:${token}`);
   if (!status) return false;
   let isValid = false;
@@ -2208,8 +2351,6 @@ async function verifyAndRenewAdminToken(token, env) {
     }
   }
   if (isValid) {
-    // 管理員活躍操作中：自動滑動續約 5 分鐘 (300 秒)，靜止 5 分鐘無操作則自動徹底失效銷毀
-    // 節流保護：每 60 秒最多寫入一次 KV，避免後台並發 API 請求觸發 Cloudflare KV 每秒 1 次寫入限制 (rate limit exceeded)
     const now = Date.now();
     const lastRenewed = Number(data.renewedAt) || 0;
     if (now - lastRenewed > 60000) {
@@ -2225,6 +2366,19 @@ async function verifyAndRenewAdminToken(token, env) {
 
 async function getAdminUsernameFromToken(token, env) {
   if (!token) return null;
+
+  // 1. 優先從 HMAC Token 解析
+  if (token.startsWith("adm_") && token.includes(".")) {
+    try {
+      const rest = token.slice(4);
+      const payloadB64 = rest.split(".")[0];
+      const payloadJson = base64UrlDecode(payloadB64);
+      const data = JSON.parse(payloadJson);
+      if (data && data.u) return data.u;
+    } catch (_) {}
+  }
+
+  // 2. 向後相容舊版 UUID Token
   const status = await kvGet(env, `admin_token:${token}`);
   if (!status) return null;
   if (status === "active") {
@@ -2306,7 +2460,7 @@ function renderAdminLoginHtml(nonce) {
             sessionStorage.setItem("admin_token", data.token);
           }
           btn.innerText = "驗證成功，載入後台...";
-          window.location.reload();
+          window.location.href = "/admin";
         } else {
           err.innerText = data.message || "驗證失敗";
           err.style.display = "block";
@@ -2536,6 +2690,21 @@ function renderAdminDashboardHtml(adminUsername, token, nonce) {
         .replace(/'/g, "&#039;");
     }
 
+    let isHandling401 = false;
+    async function logoutAdmin(reason) {
+      if (isHandling401) return;
+      isHandling401 = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      try { sessionStorage.removeItem("admin_token"); } catch (_) {}
+      try {
+        await fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" });
+      } catch (_) {}
+      if (reason) {
+        alert(reason);
+      }
+      window.location.href = "/admin";
+    }
+
     async function adminFetch(url, options = {}) {
       options.credentials = options.credentials || "same-origin";
       options.headers = options.headers || {};
@@ -2545,8 +2714,13 @@ function renderAdminDashboardHtml(adminUsername, token, nonce) {
       }
       const res = await fetch(url, options);
       if (res.status === 401) {
-        logoutAdmin();
+        logoutAdmin("⏰ 登入憑證已過期或伺服器重新驗證，請重新登入。");
         throw new Error("401 Unauthorized");
+      }
+      const renewedToken = res.headers.get("X-Admin-Renewed-Token");
+      if (renewedToken) {
+        window.__ADMIN_TOKEN__ = renewedToken;
+        try { sessionStorage.setItem("admin_token", renewedToken); } catch (_) {}
       }
       return res;
     }
@@ -2557,8 +2731,7 @@ function renderAdminDashboardHtml(adminUsername, token, nonce) {
 
     function handleIdleTimeout() {
       if (idleTimer) clearTimeout(idleTimer);
-      alert("⏰ 您已超過 5 分鐘無任何操作，為維護後台安全，系統已自動為您強制登出。");
-      logoutAdmin();
+      logoutAdmin("⏰ 您已超過 5 分鐘無任何操作，為維護後台安全，系統已自動為您強制登出。");
     }
 
     function resetIdleTimer() {
@@ -2590,15 +2763,6 @@ function renderAdminDashboardHtml(adminUsername, token, nonce) {
       }
     });
 
-    async function logoutAdmin() {
-      if (idleTimer) clearTimeout(idleTimer);
-      sessionStorage.removeItem("admin_token");
-      try {
-        await fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" });
-      } catch (_) {}
-      window.location.reload();
-    }
-
     function showChangePassModal() {
       document.getElementById("changePassErr").style.display = "none";
       document.getElementById("newPass1").value = "";
@@ -2618,11 +2782,6 @@ function renderAdminDashboardHtml(adminUsername, token, nonce) {
       err.style.display = "none";
 
       if (u.length > 0) {
-        if (u.toUpperCase() === "ADMIN") {
-          err.innerText = "管理員名稱不能為預設的 ADMIN！請輸入專屬名稱。";
-          err.style.display = "block";
-          return;
-        }
         if (u.length < 3) {
           err.innerText = "管理員名稱長度需至少 3 碼！";
           err.style.display = "block";
@@ -2654,8 +2813,12 @@ function renderAdminDashboardHtml(adminUsername, token, nonce) {
         });
         const data = await res.json();
         if (data.success) {
+          if (data.token) {
+            window.__ADMIN_TOKEN__ = data.token;
+            try { sessionStorage.setItem("admin_token", data.token); } catch (_) {}
+          }
           alert(data.message || "管理員帳號密碼修改成功！");
-          window.location.reload();
+          window.location.href = "/admin";
         } else {
           err.innerText = data.message || "修改失敗";
           err.style.display = "block";
