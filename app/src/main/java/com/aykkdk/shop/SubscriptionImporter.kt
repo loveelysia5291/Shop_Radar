@@ -8,6 +8,9 @@ internal object SubscriptionImporter {
         val clean = PublicShareLinkResolver.resolve(input)
         val market = Market.fromPublicUrl(clean)
             ?: throw IllegalArgumentException("無法辨識平台，請貼上公開店家或商品網址。")
+        val accountStore = AccountStore.get(context)
+        val isVip = accountStore.getRole() in setOf("standard", "vip", "admin")
+
         if (market.isPublicProductUrl(clean)) {
             val store = ProductSubscriptionStore(context)
             require(!store.contains(clean) && AuctionStore(context).list().none {
@@ -16,16 +19,24 @@ internal object SubscriptionImporter {
             // Auction-capable platforms are classified before creating any product record.
             val initial = if (market in setOf(Market.YAHOO, Market.RUTEN)) store.readPublicSnapshot(clean) else null
             if (productKind(market, initial) == RefreshKind.AUCTION) {
+                if (!isVip && AuctionStore(context).list().size >= 3) {
+                    throw IllegalArgumentException("普通會員 (免費版) 最多僅限訂閱 3 個競拍！請升級 VIP 會員或減少追蹤項目。")
+                }
                 val url = AuctionParser.canonicalUrl(clean)
                 val auctions = AuctionStore(context)
                 auctions.add(url)
                 auctions.update(url) { entry -> initial?.title?.let { entry.put("title", it)
                     .put("isAdult", entry.optBoolean("isAdult") || AdultVisibility.adultText(it)) } }
                 SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.AUCTION, url))
+                accountStore.triggerCloudSync(context)
                 return ImportedSubscription("已加入競拍追蹤，正在刷新競標資料。", RefreshKind.AUCTION)
+            }
+            if (!isVip && store.list().size >= 3) {
+                throw IllegalArgumentException("普通會員 (免費版) 最多僅限訂閱 3 個商品！請升級 VIP 會員或減少追蹤項目。")
             }
             val result = store.addPublicUrl(clean, initial)
             require(result.accepted) { result.message }
+            accountStore.triggerCloudSync(context)
             return ImportedSubscription(result.message, RefreshKind.PRODUCT)
         }
         require(market.supportsShopSubscriptions) { "此平台目前尚未支援店家追蹤。" }
@@ -38,6 +49,9 @@ internal object SubscriptionImporter {
             else -> clean
         }
         val prefs = context.getSharedPreferences("shop_subscriptions_v2", Context.MODE_PRIVATE)
+        if (!isVip && prefs.all.size >= 2) {
+            throw IllegalArgumentException("普通會員 (免費版) 最多僅限訂閱 2 個店家！請升級 VIP 會員或減少追蹤項目。")
+        }
         synchronized(SubscriptionMutations.lock) {
             require(!prefs.contains(target) && prefs.all.keys.none { SubscriptionIdentity.sameShop(it, target) }) {
                 SubscriptionIdentity.DUPLICATE_MESSAGE
@@ -49,6 +63,7 @@ internal object SubscriptionImporter {
         }
         SubscriptionRefreshQueue.request(context, RefreshTarget(RefreshKind.SHOP, target))
         AutomaticRefreshStore(context).configure(RefreshTarget(RefreshKind.SHOP, target), 30)
+        accountStore.triggerCloudSync(context)
         return ImportedSubscription("已訂閱店家，正在讀取名稱與建立商品基準。", RefreshKind.SHOP)
     }
 

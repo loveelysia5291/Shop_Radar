@@ -345,27 +345,31 @@ class AccountStore private constructor(private val context: Context) {
             }
             val activeToken = getToken()
 
-            // 1. 訂閱項目
-            val subsArray = JSONArray()
+            // 1. 商品訂閱項目
+            val prodsArray = JSONArray()
             val prodStore = ProductSubscriptionStore(appContext)
             prodStore.list().forEach { p ->
-                subsArray.put(JSONObject().apply {
+                prodsArray.put(JSONObject().apply {
                     put("url", p.optString("url"))
                     put("title", p.optString("title"))
                     put("shop", p.optString("shop"))
                     put("price", p.optLong("price", 0L))
                 })
             }
+
+            // 2. 店家賣場訂閱
+            val storesArray = JSONArray()
             val shopPrefs = appContext.getSharedPreferences("shop_subscriptions_v2", Context.MODE_PRIVATE)
             shopPrefs.all.keys.forEach { shopUrl ->
-                subsArray.put(JSONObject().apply {
+                storesArray.put(JSONObject().apply {
                     put("url", shopUrl)
                     put("title", "訂閱賣場")
                     put("shop", shopUrl)
+                    put("type", "store")
                 })
             }
 
-            // 2. 競標項目
+            // 3. 競標項目
             val auctionsArray = JSONArray()
             val auctionStore = AuctionStore(appContext)
             auctionStore.list().forEach { a ->
@@ -375,7 +379,7 @@ class AccountStore private constructor(private val context: Context) {
                 })
             }
 
-            // 3. 物流包裹
+            // 4. 物流包裹
             val logisticsArray = JSONArray()
             val logStore = LogisticsStore(appContext)
             val parcels = logStore.loadAll()
@@ -390,7 +394,15 @@ class AccountStore private constructor(private val context: Context) {
                 })
             }
 
+            // 合併相容 subscriptions
+            val subsArray = JSONArray().apply {
+                for (i in 0 until prodsArray.length()) put(prodsArray.get(i))
+                for (i in 0 until storesArray.length()) put(storesArray.get(i))
+            }
+
             val payload = JSONObject().apply {
+                put("products", prodsArray)
+                put("stores", storesArray)
                 put("subscriptions", subsArray)
                 put("auctions", auctionsArray)
                 put("logistics", logisticsArray)

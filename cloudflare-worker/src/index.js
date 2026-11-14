@@ -466,6 +466,7 @@ export default {
           if (raw) {
             try {
               const userObj = JSON.parse(raw);
+              if (userObj.isBlocked) continue; // 拉黑封鎖設備不發送測試推播
               if (userObj.fcmToken) {
                 attemptedCount++;
                 const res = await sendFcmNotification(env, userObj.fcmToken, {
@@ -622,15 +623,23 @@ export default {
           if (raw) {
             try {
               const obj = JSON.parse(raw);
+              const subs = obj.subscriptions || [];
+              const prodCount = (obj.products && obj.products.length) || subs.filter(s => s.title !== "訂閱賣場" && s.type !== "store" && s.shop !== s.url).length;
+              const storeCount = (obj.stores && obj.stores.length) || subs.filter(s => s.title === "訂閱賣場" || s.type === "store" || s.shop === s.url).length;
+              const auctionCount = (obj.auctions || []).length;
               devices.push({
                 username: obj.username,
                 email: obj.email || "-",
                 role: obj.role || "standard",
+                is_blocked: !!obj.isBlocked,
                 has_fcm: !!obj.fcmToken,
                 fcm_preview: obj.fcmToken ? `${obj.fcmToken.slice(0, 8)}...${obj.fcmToken.slice(-6)}` : "",
                 last_sync_at: obj.lastSyncAt || 0,
                 last_checked_at: obj.lastCheckedAt || 0,
-                subscriptions_count: (obj.subscriptions || []).length,
+                subscriptions_count: subs.length,
+                products_count: prodCount,
+                stores_count: storeCount,
+                auctions_count: auctionCount,
                 logistics_count: (obj.logistics || []).length,
                 created_at: obj.createdAt || 0,
                 is_registered: !!obj.isRegisteredAccount
@@ -660,6 +669,30 @@ export default {
         return jsonResponse({ success: true, message: `權限已更新為 ${role}` });
       }
 
+      // 6-2. 後台 API：拉黑 / 解除封鎖帳號
+      if (path === "/api/admin/toggle-block" && request.method === "POST") {
+        if (!(await verifyAdmin(request, env))) {
+          return jsonResponse({ success: false, message: "未授權" }, 401);
+        }
+        const body = await request.json().catch(() => ({}));
+        const { username, block } = body;
+        if (!username) {
+          return jsonResponse({ success: false, message: "缺少帳號參數" }, 400);
+        }
+        const raw = await kvGet(env, `user:${username}`);
+        if (!raw) return jsonResponse({ success: false, message: "找不到該帳號" }, 404);
+
+        const obj = JSON.parse(raw);
+        obj.isBlocked = !!block;
+        obj.blockedAt = block ? Date.now() : null;
+        await kvPut(env, `user:${username}`, JSON.stringify(obj));
+        return jsonResponse({
+          success: true,
+          message: block ? `已將「${username}」拉黑封鎖！該帳號已無法再登入、同步或接收推播。` : `已成功解除「${username}」的封鎖狀態。`,
+          is_blocked: obj.isBlocked
+        });
+      }
+
       // 7. 後台 API：廣播推播
       if (path === "/api/admin/broadcast" && request.method === "POST") {
         if (!(await verifyAdmin(request, env))) {
@@ -681,6 +714,7 @@ export default {
           const raw = await kvGet(env, `user:${u}`);
           if (raw) {
             const user = JSON.parse(raw);
+            if (user.isBlocked) continue; // 拉黑封鎖設備不發送廣播推播
             if (user.fcmToken) {
               attemptedCount++;
               const res = await sendFcmNotification(env, user.fcmToken, { title, body: pushBody }, { type: "admin_broadcast" });
@@ -856,6 +890,12 @@ export default {
         if (!rawUser) return jsonResponse({ success: false, message: "帳號或密碼錯誤" }, 401);
 
         const userData = JSON.parse(rawUser);
+        if (userData.isBlocked) {
+          return jsonResponse({
+            success: false,
+            message: "此帳號已被管理員封鎖拉黑，無法登入購物雷達！如有疑問請聯繫管理員。"
+          }, 403);
+        }
         let passwordMatches = false;
 
         if (userData.passwordSalt) {
@@ -980,6 +1020,9 @@ export default {
       // 11. 身份認證保護
       const user = await authenticate(request, env);
       if (!user) return jsonResponse({ success: false, message: "身份驗證失敗" }, 401);
+      if (user.isBlocked) {
+        return jsonResponse({ success: false, message: "此帳號已被管理員封鎖拉黑，無法使用服務" }, 403);
+      }
 
       // 更新 FCM Token
       if (path === "/api/device/token" && request.method === "POST") {
@@ -993,15 +1036,63 @@ export default {
         return jsonResponse({ success: true, message: "FCM Token 已更新綁定" });
       }
 
-      // 同步追蹤項目 (加上安全過濾，杜絕 SSRF)
+      // 同步追蹤項目 (加上安全過濾，杜絕 SSRF，並落實免費版配額限制)
       if (path === "/api/sync" && request.method === "POST") {
         const body = await request.json().catch(() => ({}));
-        const { subscriptions, auctions, logistics, fcm_token } = body;
+        let { subscriptions, stores, auctions, logistics, fcm_token } = body;
 
-        if (Array.isArray(subscriptions)) {
-          user.subscriptions = subscriptions.filter(s => isValidUrl(s?.url));
+        let productList = [];
+        let storeList = [];
+
+        // 支援分開傳遞 stores 與 subscriptions，或從 subscriptions 自動區分商品與店家
+        if (Array.isArray(stores)) {
+          storeList = stores.filter(s => isValidUrl(s?.url));
         }
-        if (Array.isArray(auctions)) user.auctions = auctions;
+        if (Array.isArray(subscriptions)) {
+          for (const s of subscriptions) {
+            if (!isValidUrl(s?.url)) continue;
+            if (s.title === "訂閱賣場" || s.type === "store" || (typeof s.shop === "string" && s.shop === s.url)) {
+              if (!storeList.some(item => item.url === s.url)) {
+                storeList.push(s);
+              }
+            } else {
+              productList.push(s);
+            }
+          }
+        }
+
+        const auctionList = Array.isArray(auctions) ? auctions.filter(a => a && (a.url || a.id)) : [];
+        const isVip = (user.role === "standard" || user.role === "vip" || user.role === "admin");
+
+        // 免費版 (普通會員) 配額限制：最多 3 個商品、2 個店家、3 個競拍訂閱
+        if (!isVip) {
+          if (productList.length > 3) {
+            return jsonResponse({
+              success: false,
+              code: "LIMIT_PRODUCTS",
+              message: `普通會員 (免費版) 最多僅限追蹤 3 個商品 (目前已選 ${productList.length} 個)。請升級 VIP 會員或減少追蹤項目！`
+            }, 400);
+          }
+          if (storeList.length > 2) {
+            return jsonResponse({
+              success: false,
+              code: "LIMIT_STORES",
+              message: `普通會員 (免費版) 最多僅限追蹤 2 個店家 (目前已選 ${storeList.length} 個)。請升級 VIP 會員或減少追蹤項目！`
+            }, 400);
+          }
+          if (auctionList.length > 3) {
+            return jsonResponse({
+              success: false,
+              code: "LIMIT_AUCTIONS",
+              message: `普通會員 (免費版) 最多僅限追蹤 3 個競拍訂閱 (目前已選 ${auctionList.length} 個)。請升級 VIP 會員或減少追蹤項目！`
+            }, 400);
+          }
+        }
+
+        user.subscriptions = [...productList, ...storeList];
+        user.products = productList;
+        user.stores = storeList;
+        user.auctions = auctionList;
         if (Array.isArray(logistics)) user.logistics = logistics;
         if (fcm_token) user.fcmToken = fcm_token;
 
@@ -1011,12 +1102,19 @@ export default {
         return jsonResponse({
           success: true,
           message: "雲端監控項目同步成功",
-          role: user.role || "standard",
-          check_frequency: (user.role === "low") ? "每 60 分鐘" : "每 30 分鐘",
+          role: user.role || "low",
+          check_frequency: isVip ? "每 30 分鐘 (VIP)" : "每 60 分鐘 (普通會員)",
           synced_at: user.lastSyncAt,
+          limits: {
+            products: isVip ? -1 : 3,
+            stores: isVip ? -1 : 2,
+            auctions: isVip ? -1 : 3
+          },
           counts: {
+            products: productList.length,
+            stores: storeList.length,
+            auctions: auctionList.length,
             subscriptions: (user.subscriptions || []).length,
-            auctions: (user.auctions || []).length,
             logistics: (user.logistics || []).length
           }
         });
@@ -1085,6 +1183,7 @@ async function runScheduledMonitoring(env) {
       const user = JSON.parse(userRaw);
       // 核心規則：僅限已正式註冊並有密碼憑證之登入帳號啟動推播服務，訪客不進行巡查推播
       if (!user.isRegisteredAccount && !user.passwordHash) continue;
+      if (user.isBlocked) continue; // 拉黑封鎖帳號不進行定時監控巡查
       if (!user.fcmToken) continue;
 
       const role = user.role || "standard";
@@ -1716,6 +1815,13 @@ function escapeHtml(str) {
  * 純淨管理員登入頁面 (未登入者僅回傳此頁面，不包含任何管理 API 路由或敏感邏輯)
  */
 function renderAdminLoginHtml(isInitialized) {
+  const init = !!isInitialized;
+  const promptText = init ? "請輸入管理員帳號與密碼" : "系統初次部署：請設定您的專屬管理員帳號與密碼";
+  const pwdPlaceholder = init ? "管理員密碼" : "請設定管理員密碼 (至少8碼)";
+  const confirmInput = init ? "" : '<input type="password" id="pword2" class="input" placeholder="再次確認密碼" required autocomplete="new-password" />';
+  const btnText = init ? "登入管理後台" : "建立專屬管理員";
+  const endpoint = init ? "/api/admin/login" : "/api/admin/initial-setup";
+
   return `<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -1736,19 +1842,18 @@ function renderAdminLoginHtml(isInitialized) {
 <body>
   <div class="card">
     <h2 style="margin-bottom: 12px; text-align: center; color: var(--primary);">🛡️ 購物雷達管理系統</h2>
-    <p style="color: #94a3b8; font-size: 13px; margin-bottom: 20px; text-align: center;">
-      \${isInitialized ? "請輸入管理員帳號與密碼" : "系統初次部署：請設定您的專屬管理員帳號與密碼"}
-    </p>
+    <p style="color: #94a3b8; font-size: 13px; margin-bottom: 20px; text-align: center;">${promptText}</p>
     <form id="authForm" onsubmit="handleAuth(event)">
       <input type="text" id="uname" class="input" placeholder="管理員帳號" required autocomplete="username" />
-      <input type="password" id="pword" class="input" placeholder="\${isInitialized ? "管理員密碼" : "請設定管理員密碼 (至少8碼)"}" required autocomplete="current-password" />
-      \${isInitialized ? "" : '<input type="password" id="pword2" class="input" placeholder="再次確認密碼" required autocomplete="new-password" />'}
-      <button type="submit" id="submitBtn" class="btn">\${isInitialized ? "登入管理後台" : "建立專屬管理員"}</button>
+      <input type="password" id="pword" class="input" placeholder="${pwdPlaceholder}" required autocomplete="current-password" />
+      ${confirmInput}
+      <button type="submit" id="submitBtn" class="btn">${btnText}</button>
     </form>
     <div id="errMsg" class="err-msg"></div>
   </div>
 
   <script>
+    const IS_INIT = ${init};
     async function handleAuth(e) {
       e.preventDefault();
       const u = document.getElementById("uname").value.trim();
@@ -1759,24 +1864,24 @@ function renderAdminLoginHtml(isInitialized) {
       err.style.display = "none";
       if (!u || !p) return;
 
-      \${isInitialized ? "" : \`
-      const p2 = p2El ? p2El.value.trim() : "";
-      if (p !== p2) {
-        err.innerText = "兩次輸入的密碼不一致！";
-        err.style.display = "block";
-        return;
+      if (!IS_INIT) {
+        const p2 = p2El ? p2El.value.trim() : "";
+        if (p !== p2) {
+          err.innerText = "兩次輸入的密碼不一致！";
+          err.style.display = "block";
+          return;
+        }
+        if (p.length < 8) {
+          err.innerText = "密碼長度需至少 8 碼！";
+          err.style.display = "block";
+          return;
+        }
       }
-      if (p.length < 8) {
-        err.innerText = "密碼長度需至少 8 碼！";
-        err.style.display = "block";
-        return;
-      }
-      \`}
 
       btn.disabled = true;
       btn.innerText = "驗證中...";
       try {
-        const endpoint = \${isInitialized ? '"/api/admin/login"' : '"/api/admin/initial-setup"'};
+        const endpoint = "${endpoint}";
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1790,18 +1895,18 @@ function renderAdminLoginHtml(isInitialized) {
           err.innerText = data.message || "驗證失敗";
           err.style.display = "block";
           btn.disabled = false;
-          btn.innerText = \${isInitialized ? '"登入管理後台"' : '"建立專屬管理員"'};
+          btn.innerText = "${btnText}";
         }
       } catch (errExp) {
         err.innerText = "連線失敗: " + errExp.message;
         err.style.display = "block";
         btn.disabled = false;
-        btn.innerText = \${isInitialized ? '"登入管理後台"' : '"建立專屬管理員"'};
+        btn.innerText = "${btnText}";
       }
     }
   </script>
 </body>
-</html>\`;
+</html>`;
 }
 
 /**
@@ -1840,7 +1945,7 @@ function renderAdminDashboardHtml(adminUsername) {
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
       <div>
         <h1 style="color: var(--primary); font-size: 22px;">📡 購物雷達 - 雲端推播管理系統</h1>
-        <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">\${safeAdmin}</strong></p>
+        <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">${safeAdmin}</strong></p>
       </div>
       <div>
         <button class="btn" style="background:#334155; color:#fff; margin-right: 8px;" onclick="showChangePassModal()">修改個人密碼</button>
@@ -1853,6 +1958,7 @@ function renderAdminDashboardHtml(adminUsername) {
       <div class="stat-box"><div class="stat-val" id="activeFcm">0</div><div style="font-size:12px;color:#94a3b8;">有效 FCM 推播裝置</div></div>
       <div class="stat-box"><div class="stat-val" id="stdUsers">0</div><div style="font-size:12px;color:#94a3b8;">VIP 會員 (30分巡查)</div></div>
       <div class="stat-box"><div class="stat-val" id="lowUsers">0</div><div style="font-size:12px;color:#94a3b8;">普通會員 (60分巡查)</div></div>
+      <div class="stat-box"><div class="stat-val" id="blockedUsers" style="color: var(--err);">0</div><div style="font-size:12px;color:#94a3b8;">已拉黑封鎖帳號</div></div>
     </div>
 
     <!-- FCM HTTP v1 雲端推播憑證設定卡片 -->
@@ -1935,7 +2041,7 @@ function renderAdminDashboardHtml(adminUsername) {
         <thead>
           <tr>
             <th style="width: 36px;"><input type="checkbox" id="selectAllDevices" onchange="toggleSelectAllDevices(this)" title="全選/取消全選" /></th>
-            <th>帳號名稱</th><th>電子信箱</th><th>會員等級 (巡查頻率)</th><th>FCM 推播狀態</th><th>操作</th>
+            <th>帳號名稱</th><th>電子信箱</th><th>會員等級 (巡查頻率)</th><th>追蹤配額 (商品/店家/競拍)</th><th>FCM 推播狀態</th><th>帳號狀態</th><th>操作</th>
           </tr>
         </thead>
         <tbody id="deviceTableBody"></tbody>
@@ -1979,7 +2085,7 @@ function renderAdminDashboardHtml(adminUsername) {
         您可以變更管理員登入名稱或密碼。修改完成後將自動更新工作階段。
       </p>
       <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">管理員名稱</label>
-      <input type="text" id="newAdminUser" class="input" value="\${safeAdmin}" placeholder="請輸入自訂管理員名稱" />
+      <input type="text" id="newAdminUser" class="input" value="${safeAdmin}" placeholder="請輸入自訂管理員名稱" />
       <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">新密碼 (至少 6 碼)</label>
       <input type="password" id="newPass1" class="input" placeholder="請輸入新密碼" />
       <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">再次確認密碼</label>
@@ -2262,8 +2368,10 @@ function renderAdminDashboardHtml(adminUsername) {
 
         document.getElementById("totalDevices").innerText = devices.length;
         document.getElementById("activeFcm").innerText = devices.filter(d => d.has_fcm).length;
-        document.getElementById("stdUsers").innerText = devices.filter(d => d.role !== "low").length;
-        document.getElementById("lowUsers").innerText = devices.filter(d => d.role === "low").length;
+        document.getElementById("stdUsers").innerText = devices.filter(d => d.role !== "low" && !d.is_blocked).length;
+        document.getElementById("lowUsers").innerText = devices.filter(d => d.role === "low" && !d.is_blocked).length;
+        const blockedEl = document.getElementById("blockedUsers");
+        if (blockedEl) blockedEl.innerText = devices.filter(d => d.is_blocked).length;
 
         const master = document.getElementById("selectAllDevices");
         if (master) master.checked = false;
@@ -2271,28 +2379,72 @@ function renderAdminDashboardHtml(adminUsername) {
         const tbody = document.getElementById("deviceTableBody");
         tbody.innerHTML = "";
         if (devices.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#94a3b8; padding:20px;">尚無連線裝置</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#94a3b8; padding:20px;">尚無連線裝置</td></tr>';
           return;
         }
         devices.forEach(d => {
           const isLow = d.role === "low";
+          const isBlocked = !!d.is_blocked;
           const tr = document.createElement("tr");
+          if (isBlocked) {
+            tr.style.background = "rgba(239, 68, 68, 0.06)";
+          }
           const safeUsername = escapeHtml(d.username);
           const safeEmail = escapeHtml(d.email || "-");
-          const roleBadge = '<span class="badge ' + (isLow ? 'badge-60' : 'badge-30') + '">' + (isLow ? '普通會員 (60分鐘)' : 'VIP 會員 (30分鐘)') + '</span>';
+          const roleBadge = '<span class="badge ' + (isLow ? 'badge-60' : 'badge-30') + '">' + (isLow ? '普通會員 (60分)' : 'VIP 會員 (30分)') + '</span>';
           const fcmBadge = d.has_fcm ? '<span style="color:#34d399;">● 已連線</span>' : '<span style="color:#94a3b8;">○ 未連線</span>';
-          const actionHtml = '<button class="btn" style="background:#0284c7; color:#fff; padding:4px 10px; font-size:12px; margin-right:6px;" onclick="pushToSingleDevice(\'' + safeUsername + '\')">測試推送</button>' +
-            '<button class="btn" style="background:#334155; color:#fff; padding:4px 10px; font-size:12px;" onclick="toggleRole(\'' + safeUsername + '\', \'' + (isLow ? 'standard' : 'low') + '\')">切換為 ' + (isLow ? 'VIP 會員' : '普通會員') + '</button>';
+          const statusBadge = isBlocked 
+            ? '<span class="badge" style="background:#450a0a; color:#f87171; border: 1px solid #7f1d1d;">🚫 已拉黑</span>' 
+            : '<span class="badge" style="background:#064e3b; color:#34d399;">🟢 正常</span>';
+
+          // 追蹤配額顯示 (普通會員限制：3個商品 2個店家 3個競拍)
+          let quotaDisplay = "";
+          const prodC = d.products_count || 0;
+          const storeC = d.stores_count || 0;
+          const aucC = d.auctions_count || 0;
+          if (isLow) {
+            const prodColor = prodC >= 3 ? "#f87171" : "#cbd5e1";
+            const storeColor = storeC >= 2 ? "#f87171" : "#cbd5e1";
+            const aucColor = aucC >= 3 ? "#f87171" : "#cbd5e1";
+            quotaDisplay = '<span style="font-size:12px;">商品: <strong style="color:' + prodColor + ';">' + prodC + '/3</strong> | 店家: <strong style="color:' + storeColor + ';">' + storeC + '/2</strong> | 競拍: <strong style="color:' + aucColor + ';">' + aucC + '/3</strong></span>';
+          } else {
+            quotaDisplay = '<span style="font-size:12px; color:#38bdf8;">商品: ' + prodC + ' | 店家: ' + storeC + ' | 競拍: ' + aucC + ' <strong style="font-size:11px; color:#34d399;">(VIP無限)</strong></span>';
+          }
+
+          const pushBtn = '<button class="btn" style="background:#0284c7; color:#fff; padding:4px 8px; font-size:11px; margin-right:4px;" onclick="pushToSingleDevice(\'' + safeUsername + '\')">推送</button>';
+          const roleBtn = '<button class="btn" style="background:#334155; color:#fff; padding:4px 8px; font-size:11px; margin-right:4px;" onclick="toggleRole(\'' + safeUsername + '\', \'' + (isLow ? 'standard' : 'low') + '\')">' + (isLow ? '升VIP' : '降普通') + '</button>';
+          const blockBtn = isBlocked
+            ? '<button class="btn" style="background:#065f46; color:#34d399; padding:4px 8px; font-size:11px;" onclick="toggleBlockUser(\'' + safeUsername + '\', false)">🟢 解除</button>'
+            : '<button class="btn" style="background:#7f1d1d; color:#fca5a5; padding:4px 8px; font-size:11px;" onclick="toggleBlockUser(\'' + safeUsername + '\', true)">🚫 拉黑</button>';
 
           tr.innerHTML = '<td><input type="checkbox" class="device-select" value="' + safeUsername + '" data-fcm="' + d.has_fcm + '" /></td>' +
             '<td><strong>' + safeUsername + '</strong></td>' +
-            '<td style="color:#94a3b8; font-size:13px;">' + safeEmail + '</td>' +
+            '<td style="color:#94a3b8; font-size:12px;">' + safeEmail + '</td>' +
             '<td>' + roleBadge + '</td>' +
+            '<td>' + quotaDisplay + '</td>' +
             '<td>' + fcmBadge + '</td>' +
-            '<td>' + actionHtml + '</td>';
+            '<td>' + statusBadge + '</td>' +
+            '<td style="white-space: nowrap;">' + pushBtn + roleBtn + blockBtn + '</td>';
           tbody.appendChild(tr);
         });
       } catch (_) {}
+    }
+
+    async function toggleBlockUser(username, block) {
+      const action = block ? "拉黑封鎖" : "解除封鎖";
+      if (!confirm(`確定要${action}「${username}」嗎？${block ? "封鎖後該帳號將無法登入、同步或接收任何推播！" : ""}`)) return;
+      try {
+        const res = await fetch("/api/admin/toggle-block", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, block })
+        });
+        const data = await res.json();
+        alert(data.message || (data.success ? "操作成功" : "操作失敗"));
+        loadDevices();
+      } catch (e) {
+        alert("連線錯誤: " + e.message);
+      }
     }
 
     async function toggleRole(username, newRole) {

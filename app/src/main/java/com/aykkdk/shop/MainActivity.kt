@@ -1963,7 +1963,10 @@ private fun AuctionScreen(modifier: Modifier, foreground: Boolean, refreshing: B
                         }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp)) {
                             Text("查看競拍", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        TextButton(onClick = { store.remove(entry.getString("url")) },
+                        TextButton(onClick = {
+                            store.remove(entry.getString("url"))
+                            AccountStore.get(context).triggerCloudSync(context)
+                        },
                             modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp)) {
                             Text("取消追蹤", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
@@ -2480,6 +2483,7 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
             confirmButton = { TextButton(onClick = {
                 productStore.remove(productUrl)
                 NotificationManagerCompat.from(context).cancel("subscription-updates", RefreshTarget(RefreshKind.PRODUCT, productUrl).key.hashCode())
+                AccountStore.get(context).triggerCloudSync(context)
                 localVersion++; pendingProductRemoval = null
             }) { Text("確定取消") } },
             dismissButton = { TextButton(onClick = { pendingProductRemoval = null }) { Text("保留訂閱") } })
@@ -2616,26 +2620,41 @@ private fun countdown(ms: Long): String {
 
 private fun subscribeListing(context: android.content.Context, product: Product): String =
     runCatching {
-        if (product.platform == Market.FACEBOOK.label && FacebookCardReference.parse(product.url) != null) {
-            val actual = FacebookResolvedLinks.find(product.url)
-            if (actual != null) {
-                ProductSubscriptionStore(context).add(product.copy(url = actual))
-                "已訂閱商品：${product.title}"
-            } else {
-                FacebookCardActivity.open(context, product, subscribe = true)
-                ""
-            }
-        } else if (product.platform in setOf(Market.YAHOO.label, Market.RUTEN.label) && product.isAuction) {
+        val accountStore = AccountStore.get(context)
+        val role = accountStore.getRole()
+        val isVip = role in setOf("standard", "vip", "admin")
+
+        if (product.platform in setOf(Market.YAHOO.label, Market.RUTEN.label) && product.isAuction) {
             val store = AuctionStore(context)
+            if (!isVip && store.list().size >= 3) {
+                return "普通會員 (免費版) 最多僅限訂閱 3 個競拍！請升級 VIP 會員或減少追蹤項目。"
+            }
             val url = AuctionParser.canonicalUrl(product.url)
             store.add(url)
             store.update(url) { it.put("title", product.title).put("image", product.image).put("isAdult", product.isAdult || AdultVisibility.adultText(product.title)) }
             ImageCachePolicy.record(context, listOf(product))
-            AccountStore.get(context).triggerCloudSync(context)
+            accountStore.triggerCloudSync(context)
             "已訂閱競標：${product.title}"
         } else {
-            ProductSubscriptionStore(context).add(product)
-            "已訂閱商品：${product.title}"
+            val prodStore = ProductSubscriptionStore(context)
+            if (!isVip && prodStore.list().size >= 3) {
+                return "普通會員 (免費版) 最多僅限訂閱 3 個商品！請升級 VIP 會員或減少追蹤項目。"
+            }
+            if (product.platform == Market.FACEBOOK.label && FacebookCardReference.parse(product.url) != null) {
+                val actual = FacebookResolvedLinks.find(product.url)
+                if (actual != null) {
+                    prodStore.add(product.copy(url = actual))
+                    accountStore.triggerCloudSync(context)
+                    "已訂閱商品：${product.title}"
+                } else {
+                    FacebookCardActivity.open(context, product, subscribe = true)
+                    ""
+                }
+            } else {
+                prodStore.add(product)
+                accountStore.triggerCloudSync(context)
+                "已訂閱商品：${product.title}"
+            }
         }
     }.getOrElse { it.message ?: "無法新增訂閱，請重試。" }
 
