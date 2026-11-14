@@ -150,7 +150,7 @@ export default {
           const adminUsername = (await getAdminUsernameFromToken(token, env)) || "Admin";
           const headers = getHtmlHeaders(nonce);
           headers["Set-Cookie"] = getAdminSessionCookie(token, request);
-          return new Response(renderAdminDashboardHtml(adminUsername, nonce), {
+          return new Response(renderAdminDashboardHtml(adminUsername, token, nonce), {
             status: 200,
             headers
           });
@@ -239,7 +239,8 @@ export default {
         const adminToken = "adm_" + crypto.randomUUID();
         await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
           status: "active",
-          username: uname
+          username: uname,
+          renewedAt: Date.now()
         }), ADMIN_SESSION_TTL_SEC);
 
         const cookie = getAdminSessionCookie(adminToken, request);
@@ -342,7 +343,8 @@ export default {
           const adminToken = "adm_" + crypto.randomUUID();
           await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
             status: "active",
-            username: inputUsername
+            username: inputUsername,
+            renewedAt: Date.now()
           }), ADMIN_SESSION_TTL_SEC);
 
           const cookie = getAdminSessionCookie(adminToken, request);
@@ -382,7 +384,8 @@ export default {
         const adminToken = "adm_" + crypto.randomUUID();
         await kvPut(env, `admin_token:${adminToken}`, JSON.stringify({
           status: "active",
-          username: adminData.username
+          username: adminData.username,
+          renewedAt: Date.now()
         }), ADMIN_SESSION_TTL_SEC);
 
         const cookie = getAdminSessionCookie(adminToken, request);
@@ -486,7 +489,8 @@ export default {
         const finalToken = currentToken || ("adm_" + crypto.randomUUID());
         await kvPut(env, `admin_token:${finalToken}`, JSON.stringify({
           status: "active",
-          username: finalUname
+          username: finalUname,
+          renewedAt: Date.now()
         }), ADMIN_SESSION_TTL_SEC);
 
         const cookie = getAdminSessionCookie(finalToken, request);
@@ -794,6 +798,7 @@ export default {
 
         return jsonResponse({
           success: true,
+          is_kv_bound: !!env.RADAR_KV,
           has_v1: !!saData,
           v1_project_id: saData?.project_id || "",
           v1_client_email: saData?.client_email || "",
@@ -2193,7 +2198,7 @@ async function verifyAndRenewAdminToken(token, env) {
   let data = null;
   if (status === "active") {
     isValid = true;
-    data = { status: "active" };
+    data = { status: "active", renewedAt: 0 };
   } else {
     try {
       data = JSON.parse(status);
@@ -2204,9 +2209,15 @@ async function verifyAndRenewAdminToken(token, env) {
   }
   if (isValid) {
     // 管理員活躍操作中：自動滑動續約 5 分鐘 (300 秒)，靜止 5 分鐘無操作則自動徹底失效銷毀
-    try {
-      await kvPut(env, `admin_token:${token}`, JSON.stringify(data), ADMIN_SESSION_TTL_SEC);
-    } catch (_) {}
+    // 節流保護：每 60 秒最多寫入一次 KV，避免後台並發 API 請求觸發 Cloudflare KV 每秒 1 次寫入限制 (rate limit exceeded)
+    const now = Date.now();
+    const lastRenewed = Number(data.renewedAt) || 0;
+    if (now - lastRenewed > 60000) {
+      data.renewedAt = now;
+      try {
+        await kvPut(env, `admin_token:${token}`, JSON.stringify(data), ADMIN_SESSION_TTL_SEC);
+      } catch (_) {}
+    }
     return true;
   }
   return false;
@@ -2317,7 +2328,7 @@ function renderAdminLoginHtml(nonce) {
 /**
  * 視覺化管理員儀表板 HTML (僅在通過身分驗證後於伺服器端動態渲染，零 Token 存於 localStorage，嚴格 CSP Nonce 防護)
  */
-function renderAdminDashboardHtml(adminUsername, nonce) {
+function renderAdminDashboardHtml(adminUsername, token, nonce) {
   const safeAdmin = escapeHtml(adminUsername || "Admin");
   return `<!DOCTYPE html>
 <html lang="zh-TW">
@@ -2350,12 +2361,18 @@ function renderAdminDashboardHtml(adminUsername, nonce) {
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
       <div>
         <h1 style="color: var(--primary); font-size: 22px;">📡 購物雷達 - 雲端推播管理系統</h1>
-        <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">${safeAdmin}</strong></p>
+        <p style="font-size: 12px; color: #94a3b8; margin-top: 4px;">登入身份：<strong id="currentAdminName" style="color: #38bdf8;">${safeAdmin}</strong> <span id="kvStatusBadge" class="badge" style="background:#1e293b; color:#94a3b8; margin-left: 8px;">檢測中...</span></p>
       </div>
       <div>
         <button id="btnOpenChangePass" class="btn" style="background:#334155; color:#fff; margin-right: 8px;">修改個人密碼</button>
         <button id="btnLogoutAdmin" class="btn" style="background:#475569; color:#fff;">登出</button>
       </div>
+    </div>
+
+    <div id="kvWarningBanner" style="display: none; background: #450a0a; border: 1px solid #dc2626; color: #fecaca; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px; line-height: 1.6;">
+      <strong>⚠️ 注意：尚未綁定 RADAR_KV 命名空間！</strong><br>
+      目前伺服器運行於臨時記憶體模式，當 Cloudflare Worker 重啟或重新部署時，FCM 憑證與註冊裝置將會遺失。<br>
+      請前往 Cloudflare 控制台 ➔ 點入您的 Worker ➔ <strong>「設定」 (Settings)</strong> ➔ <strong>「變數與機密」 (Variables and Secrets)</strong> ➔ 在 <strong>「KV 命名空間繫結」 (KV Namespace Bindings)</strong> 點擊新增繫結：變數名稱填寫 <code>RADAR_KV</code> 並選擇您的 KV 資料表。
     </div>
 
     <div class="stats-grid">
@@ -2502,6 +2519,13 @@ function renderAdminDashboardHtml(adminUsername, nonce) {
   </div>
 
   <script nonce="${nonce}">
+    window.__ADMIN_TOKEN__ = "${token}";
+    try {
+      if (window.__ADMIN_TOKEN__) {
+        sessionStorage.setItem("admin_token", window.__ADMIN_TOKEN__);
+      }
+    } catch (_) {}
+
     function escapeHtml(str) {
       if (str === null || str === undefined) return "";
       return String(str)
@@ -2515,7 +2539,7 @@ function renderAdminDashboardHtml(adminUsername, nonce) {
     async function adminFetch(url, options = {}) {
       options.credentials = options.credentials || "same-origin";
       options.headers = options.headers || {};
-      const token = sessionStorage.getItem("admin_token");
+      const token = window.__ADMIN_TOKEN__ || sessionStorage.getItem("admin_token");
       if (token && !options.headers["Authorization"]) {
         options.headers["Authorization"] = "Bearer " + token;
       }
@@ -2564,13 +2588,6 @@ function renderAdminDashboardHtml(adminUsername, nonce) {
       } else {
         resetIdleTimer();
       }
-    });
-
-    // 關閉網頁視窗時嘗試立即銷毀伺服器 Session
-    window.addEventListener("pagehide", () => {
-      try {
-        navigator.sendBeacon("/api/admin/logout");
-      } catch (_) {}
     });
 
     async function logoutAdmin() {
@@ -2696,11 +2713,27 @@ function renderAdminDashboardHtml(adminUsername, nonce) {
 
     async function loadConfig() {
       const statusEl = document.getElementById("fcmKeyStatus");
+      const kvStatusBadge = document.getElementById("kvStatusBadge");
+      const kvBanner = document.getElementById("kvWarningBanner");
       try {
         const res = await adminFetch("/api/admin/get-config");
         const data = await res.json();
         const btnToggle = document.getElementById("btnToggleFcmEdit");
         const btnQuickTest = document.getElementById("btnQuickTestFcm");
+
+        if (data.is_kv_bound) {
+          if (kvStatusBadge) {
+            kvStatusBadge.innerText = "● KV 持久化已連線";
+            kvStatusBadge.className = "badge badge-30";
+          }
+          if (kvBanner) kvBanner.style.display = "none";
+        } else {
+          if (kvStatusBadge) {
+            kvStatusBadge.innerText = "▲ 臨時記憶體 (未綁定 KV)";
+            kvStatusBadge.className = "badge badge-60";
+          }
+          if (kvBanner) kvBanner.style.display = "block";
+        }
 
         if (data.has_v1) {
           isFcmConfigured = true;
