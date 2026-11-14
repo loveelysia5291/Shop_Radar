@@ -172,9 +172,12 @@ export default {
           username: uname
         }), 86400);
 
-        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`;
+        const isHttps = request ? request.url.startsWith("https:") : true;
+        const secureAttr = isHttps ? "Secure; " : "";
+        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=86400`;
         return jsonResponse({
           success: true,
+          token: adminToken,
           message: `專屬管理員帳號 [${uname}] 建立成功！`,
           username: uname
         }, 200, { "Set-Cookie": cookie }, request);
@@ -239,9 +242,12 @@ export default {
           username: adminData.username
         }), 86400);
 
-        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`;
+        const isHttps = request ? request.url.startsWith("https:") : true;
+        const secureAttr = isHttps ? "Secure; " : "";
+        const cookie = `admin_session=${adminToken}; Path=/; HttpOnly; ${secureAttr}SameSite=Lax; Max-Age=86400`;
         return jsonResponse({
           success: true,
+          token: adminToken,
           username: adminData.username,
           message: "登入成功"
         }, 200, { "Set-Cookie": cookie }, request);
@@ -1676,16 +1682,17 @@ async function sha256(str) {
 }
 
 function jsonResponse(data, status = 200, extraHeaders = {}, request = null) {
-  let isAdm = false;
   let origin = null;
   let selfOrigin = null;
+  let isAdm = false;
+
   if (request) {
-    const url = new URL(request.url);
-    if (url.pathname.startsWith("/api/admin") || url.pathname.startsWith("/admin")) {
-      isAdm = true;
-    }
-    origin = request.headers.get("Origin");
-    selfOrigin = url.origin;
+    try {
+      origin = request.headers.get("Origin");
+      const url = new URL(request.url);
+      selfOrigin = url.origin;
+      isAdm = url.pathname.startsWith("/api/admin") || url.pathname.startsWith("/admin");
+    } catch (_) {}
   }
 
   const headers = {
@@ -1694,20 +1701,17 @@ function jsonResponse(data, status = 200, extraHeaders = {}, request = null) {
     ...extraHeaders
   };
 
-  if (isAdm) {
-    if (origin && selfOrigin && origin === selfOrigin) {
-      headers["Access-Control-Allow-Origin"] = selfOrigin;
-      headers["Access-Control-Allow-Credentials"] = "true";
-      headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
-      headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
-    }
-    headers["Vary"] = "Origin";
+  const allowedOrigin = origin || selfOrigin;
+  if (allowedOrigin) {
+    headers["Access-Control-Allow-Origin"] = allowedOrigin;
+    headers["Access-Control-Allow-Credentials"] = "true";
   } else {
-    headers["Access-Control-Allow-Origin"] = origin || "*";
-    headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
-    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
-    headers["Vary"] = "Origin";
+    headers["Access-Control-Allow-Origin"] = "*";
   }
+
+  headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+  headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+  headers["Vary"] = "Origin";
 
   return new Response(JSON.stringify(data), { status, headers });
 }
@@ -1889,6 +1893,9 @@ function renderAdminLoginHtml(isInitialized) {
         });
         const data = await res.json();
         if (data.success) {
+          if (data.token) {
+            sessionStorage.setItem("admin_token", data.token);
+          }
           btn.innerText = "驗證成功，載入後台...";
           window.location.reload();
         } else {
@@ -2097,6 +2104,31 @@ function renderAdminDashboardHtml(adminUsername) {
   </div>
 
   <script>
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    async function adminFetch(url, options = {}) {
+      options.credentials = options.credentials || "same-origin";
+      options.headers = options.headers || {};
+      const token = sessionStorage.getItem("admin_token");
+      if (token && !options.headers["Authorization"]) {
+        options.headers["Authorization"] = "Bearer " + token;
+      }
+      const res = await fetch(url, options);
+      if (res.status === 401) {
+        logoutAdmin();
+        throw new Error("401 Unauthorized");
+      }
+      return res;
+    }
+
     let idleTimer = null;
     const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 分鐘無操作自動登出
 
@@ -2114,8 +2146,9 @@ function renderAdminDashboardHtml(adminUsername) {
 
     async function logoutAdmin() {
       if (idleTimer) clearTimeout(idleTimer);
+      sessionStorage.removeItem("admin_token");
       try {
-        await fetch("/api/admin/logout", { method: "POST" });
+        await fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" });
       } catch (_) {}
       window.location.reload();
     }
@@ -2168,7 +2201,7 @@ function renderAdminDashboardHtml(adminUsername) {
       }
 
       try {
-        const res = await fetch("/api/admin/change-password", {
+        const res = await adminFetch("/api/admin/change-password", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ newUsername: u, newPassword: p1 })
@@ -2233,11 +2266,10 @@ function renderAdminDashboardHtml(adminUsername) {
     }
 
     async function loadConfig() {
+      const statusEl = document.getElementById("fcmKeyStatus");
       try {
-        const res = await fetch("/api/admin/get-config");
-        if (res.status === 401) return logoutAdmin();
+        const res = await adminFetch("/api/admin/get-config");
         const data = await res.json();
-        const statusEl = document.getElementById("fcmKeyStatus");
         const btnToggle = document.getElementById("btnToggleFcmEdit");
         const btnQuickTest = document.getElementById("btnQuickTestFcm");
 
@@ -2265,7 +2297,14 @@ function renderAdminDashboardHtml(adminUsername) {
           if (btnQuickTest) btnQuickTest.style.display = "none";
           toggleFcmEditForm(true);
         }
-      } catch (_) {}
+      } catch (err) {
+        console.error("loadConfig error:", err);
+        if (statusEl) {
+          statusEl.innerText = "⚠️ 載入設定失敗 (點擊重試)";
+          statusEl.style.cursor = "pointer";
+          statusEl.onclick = () => loadConfig();
+        }
+      }
     }
 
     async function doSaveFcmServiceAccount() {
@@ -2291,7 +2330,7 @@ function renderAdminDashboardHtml(adminUsername) {
       msg.style.display = "block";
 
       try {
-        const res = await fetch("/api/admin/set-fcm-service-account", {
+        const res = await adminFetch("/api/admin/set-fcm-service-account", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ service_account: parsed })
@@ -2322,7 +2361,7 @@ function renderAdminDashboardHtml(adminUsername) {
       msg.style.display = "block";
 
       try {
-        const res = await fetch("/api/admin/test-fcm-v1", { method: "POST" });
+        const res = await adminFetch("/api/admin/test-fcm-v1", { method: "POST" });
         const data = await res.json();
         if (data.success) {
           msg.style.color = "#34d399";
@@ -2341,7 +2380,7 @@ function renderAdminDashboardHtml(adminUsername) {
       const key = document.getElementById("fcmLegacyKeyInput").value.trim();
       if (!key) return alert("請輸入舊版 FCM Server Key");
       try {
-        const res = await fetch("/api/admin/set-fcm-key", {
+        const res = await adminFetch("/api/admin/set-fcm-key", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ fcm_server_key: key })
@@ -2360,9 +2399,9 @@ function renderAdminDashboardHtml(adminUsername) {
     }
 
     async function loadDevices() {
+      const tbody = document.getElementById("deviceTableBody");
       try {
-        const res = await fetch("/api/admin/devices");
-        if (res.status === 401) return logoutAdmin();
+        const res = await adminFetch("/api/admin/devices");
         const data = await res.json();
         const devices = data.devices || [];
 
@@ -2376,10 +2415,9 @@ function renderAdminDashboardHtml(adminUsername) {
         const master = document.getElementById("selectAllDevices");
         if (master) master.checked = false;
 
-        const tbody = document.getElementById("deviceTableBody");
         tbody.innerHTML = "";
         if (devices.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#94a3b8; padding:20px;">尚無連線裝置</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#94a3b8; padding:20px;">尚無連線裝置。當手機 App 登入時會自動列於此處。</td></tr>';
           return;
         }
         devices.forEach(d => {
@@ -2427,14 +2465,19 @@ function renderAdminDashboardHtml(adminUsername) {
             '<td style="white-space: nowrap;">' + pushBtn + roleBtn + blockBtn + '</td>';
           tbody.appendChild(tr);
         });
-      } catch (_) {}
+      } catch (err) {
+        console.error("loadDevices error:", err);
+        if (tbody) {
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#f87171; padding:20px; cursor:pointer;" onclick="loadDevices()">⚠️ 載入裝置列表失敗 (點擊重試)</td></tr>';
+        }
+      }
     }
 
     async function toggleBlockUser(username, block) {
       const action = block ? "拉黑封鎖" : "解除封鎖";
       if (!confirm(`確定要${action}「${username}」嗎？${block ? "封鎖後該帳號將無法登入、同步或接收任何推播！" : ""}`)) return;
       try {
-        const res = await fetch("/api/admin/toggle-block", {
+        const res = await adminFetch("/api/admin/toggle-block", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, block })
@@ -2448,12 +2491,16 @@ function renderAdminDashboardHtml(adminUsername) {
     }
 
     async function toggleRole(username, newRole) {
-      await fetch("/api/admin/set-role", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, role: newRole })
-      });
-      loadDevices();
+      try {
+        await adminFetch("/api/admin/set-role", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, role: newRole })
+        });
+        loadDevices();
+      } catch (e) {
+        alert("變更權限失敗: " + e.message);
+      }
     }
 
     async function sendBroadcastPush() {
@@ -2461,7 +2508,7 @@ function renderAdminDashboardHtml(adminUsername) {
       const body = document.getElementById("pushBody").value.trim();
       if (!title || !body) return alert("請輸入標題與內容");
       try {
-        const res = await fetch("/api/admin/broadcast", {
+        const res = await adminFetch("/api/admin/broadcast", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title, body })
@@ -2484,7 +2531,7 @@ function renderAdminDashboardHtml(adminUsername) {
       if (msg === null) return;
 
       try {
-        const res = await fetch("/api/admin/test-push-devices", {
+        const res = await adminFetch("/api/admin/test-push-devices", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2502,7 +2549,7 @@ function renderAdminDashboardHtml(adminUsername) {
 
     async function pushToSingleDevice(uname) {
       try {
-        const res = await fetch("/api/admin/test-push-devices", {
+        const res = await adminFetch("/api/admin/test-push-devices", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2519,13 +2566,12 @@ function renderAdminDashboardHtml(adminUsername) {
     }
 
     async function loadAdmins() {
+      const tbody = document.getElementById("adminsTableBody");
       try {
-        const res = await fetch("/api/admin/admins");
-        if (res.status === 401) return logoutAdmin();
+        const res = await adminFetch("/api/admin/admins");
         const data = await res.json();
         const admins = data.admins || [];
         const currentAdmin = document.getElementById("currentAdminName") ? document.getElementById("currentAdminName").innerText.trim() : "";
-        const tbody = document.getElementById("adminsTableBody");
         tbody.innerHTML = "";
         if (admins.length === 0) {
           tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#94a3b8; padding:16px;">尚無其他管理員</td></tr>';
@@ -2545,7 +2591,12 @@ function renderAdminDashboardHtml(adminUsername) {
             '<td>' + actionBtn + '</td>';
           tbody.appendChild(tr);
         });
-      } catch (_) {}
+      } catch (err) {
+        console.error("loadAdmins error:", err);
+        if (tbody) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#f87171; padding:16px; cursor:pointer;" onclick="loadAdmins()">⚠️ 載入管理員清單失敗 (點擊重試)</td></tr>';
+        }
+      }
     }
 
     async function doCreateAdmin() {
@@ -2568,7 +2619,7 @@ function renderAdminDashboardHtml(adminUsername) {
       }
 
       try {
-        const res = await fetch("/api/admin/create-admin", {
+        const res = await adminFetch("/api/admin/create-admin", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: u, password: p })
@@ -2596,7 +2647,7 @@ function renderAdminDashboardHtml(adminUsername) {
     async function doDeleteAdmin(uname) {
       if (!confirm("確定要刪除管理員 [" + uname + "] 嗎？刪除後該管理員將無法再登入。")) return;
       try {
-        const res = await fetch("/api/admin/delete-admin", {
+        const res = await adminFetch("/api/admin/delete-admin", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: uname })
