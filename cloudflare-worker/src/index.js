@@ -1862,37 +1862,51 @@ function renderAdminDashboardHtml(adminUsername) {
           <h3 style="color: #38bdf8; font-size: 16px;">🔑 FCM HTTP v1 雲端推播設定 (現代 OAuth 2.0 驗證)</h3>
           <p style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Google 官方標準規範，採用 Service Account 私鑰自動產生短期 Bearer Token</p>
         </div>
-        <span id="fcmKeyStatus" class="badge" style="background: #78350f; color: #fbbf24;">檢測中...</span>
-      </div>
-
-      <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 10px; margin-bottom: 14px; border: 1px dashed #334155;">
-        <h4 style="color: #f1f5f9; font-size: 13px; margin-bottom: 6px;">📋 3 步快速取得 Service Account JSON 憑證：</h4>
-        <ol style="font-size: 12px; color: #cbd5e1; padding-left: 20px; line-height: 20px;">
-          <li>前往 <a href="https://console.firebase.google.com/" target="_blank" style="color: #38bdf8; text-decoration: underline;">Firebase Console</a> 開啟您的專案。</li>
-          <li>進入 <strong>專案設定</strong> ➔ 點選 <strong>「服務帳戶」(Service accounts)</strong> 標籤頁。</li>
-          <li>點擊 <strong>「產生新的私密金鑰」(Generate new private key)</strong>，將下載的 <code>.json</code> 檔案在此上傳或貼上內容。</li>
-        </ol>
-      </div>
-
-      <div style="margin-bottom: 12px;">
-        <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">選擇 JSON 檔案 或 直接於下方貼上內容：</label>
-        <input type="file" id="saFileInput" accept=".json,application/json" class="input" style="padding: 6px; margin-bottom: 8px;" onchange="handleSaFileSelect(event)" />
-        <textarea id="saJsonInput" class="input" style="height: 100px; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="請貼上 Firebase 下載的 service-account.json 完整內容..."></textarea>
-      </div>
-
-      <div style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
-        <button class="btn" style="background: #334155; color: #fff;" onclick="doTestFcmV1()">🔍 測試 OAuth 2.0 授權</button>
-        <button class="btn" style="padding: 10px 20px;" onclick="doSaveFcmServiceAccount()">🚀 儲存並驗證 FCM v1 憑證</button>
-      </div>
-      <p id="fcmKeyMsg" style="font-size: 13px; margin-top: 10px; display: none; line-height: 18px;"></p>
-
-      <details style="margin-top: 14px; border-top: 1px solid #334155; padding-top: 10px;">
-        <summary style="font-size: 12px; color: #64748b; cursor: pointer;">舊版相容選項 (FCM Legacy Server Key)</summary>
-        <div style="margin-top: 8px; display: flex; gap: 10px;">
-          <input type="password" id="fcmLegacyKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="舊版 FCM Server Key (AAAA...)" />
-          <button class="btn" style="background: #334155; color: #fff; white-space: nowrap;" onclick="doSaveLegacyFcmKey()">儲存舊版金鑰</button>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span id="fcmKeyStatus" class="badge" style="background: #78350f; color: #fbbf24;">檢測中...</span>
+          <button id="btnQuickTestFcm" class="btn" style="background: #1e293b; border: 1px solid #334155; color: #38bdf8; font-size: 12px; padding: 4px 10px; display: none;" onclick="doTestFcmV1()">🔍 測試授權</button>
+          <button id="btnToggleFcmEdit" class="btn" style="background: #0369a1; color: #fff; font-size: 12px; padding: 4px 12px; display: none;" onclick="toggleFcmEditForm()">✏️ 編輯憑證</button>
         </div>
-      </details>
+      </div>
+
+      <!-- 設定完成時的精簡提示 (輸入框收合時顯示) -->
+      <div id="fcmConfiguredNotice" style="display: none; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #6ee7b7; margin-bottom: 8px;">
+        <span>✅ 已成功綁定 Firebase 憑證，推播功能正常運作中。如需更新或更換私鑰，請點擊右上方「<strong>✏️ 編輯憑證</strong>」。</span>
+      </div>
+
+      <!-- 編輯/上傳表單區塊 (設定完成後自動隱藏) -->
+      <div id="fcmEditForm">
+        <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 10px; margin-bottom: 14px; border: 1px dashed #334155;">
+          <h4 style="color: #f1f5f9; font-size: 13px; margin-bottom: 6px;">📋 3 步快速取得 Service Account JSON 憑證：</h4>
+          <ol style="font-size: 12px; color: #cbd5e1; padding-left: 20px; line-height: 20px;">
+            <li>前往 <a href="https://console.firebase.google.com/" target="_blank" style="color: #38bdf8; text-decoration: underline;">Firebase Console</a> 開啟您的專案。</li>
+            <li>進入 <strong>專案設定</strong> ➔ 點選 <strong>「服務帳戶」(Service accounts)</strong> 標籤頁。</li>
+            <li>點擊 <strong>「產生新的私密金鑰」(Generate new private key)</strong>，將下載的 <code>.json</code> 檔案在此上傳或貼上內容。</li>
+          </ol>
+        </div>
+
+        <div style="margin-bottom: 12px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">選擇 JSON 檔案 或 直接於下方貼上內容：</label>
+          <input type="file" id="saFileInput" accept=".json,application/json" class="input" style="padding: 6px; margin-bottom: 8px;" onchange="handleSaFileSelect(event)" />
+          <textarea id="saJsonInput" class="input" style="height: 100px; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="請貼上 Firebase 下載的 service-account.json 完整內容..."></textarea>
+        </div>
+
+        <div style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
+          <button id="btnCancelFcmEdit" class="btn" style="background: #334155; color: #94a3b8; display: none;" onclick="toggleFcmEditForm(false)">收起</button>
+          <button class="btn" style="background: #1e293b; border: 1px solid #334155; color: #fff;" onclick="doTestFcmV1()">🔍 測試 OAuth 2.0 授權</button>
+          <button class="btn" style="padding: 10px 20px;" onclick="doSaveFcmServiceAccount()">🚀 儲存並驗證 FCM v1 憑證</button>
+        </div>
+
+        <details style="margin-top: 14px; border-top: 1px solid #334155; padding-top: 10px;">
+          <summary style="font-size: 12px; color: #64748b; cursor: pointer;">舊版相容選項 (FCM Legacy Server Key)</summary>
+          <div style="margin-top: 8px; display: flex; gap: 10px;">
+            <input type="password" id="fcmLegacyKeyInput" class="input" style="flex: 1; margin-bottom: 0;" placeholder="舊版 FCM Server Key (AAAA...)" />
+            <button class="btn" style="background: #334155; color: #fff; white-space: nowrap;" onclick="doSaveLegacyFcmKey()">儲存舊版金鑰</button>
+          </div>
+        </details>
+      </div>
+
+      <p id="fcmKeyMsg" style="font-size: 13px; margin-top: 10px; display: none; line-height: 18px;"></p>
     </div>
 
     <!-- 全域即時廣播推播卡片 -->
@@ -2077,22 +2091,73 @@ function renderAdminDashboardHtml(adminUsername) {
       reader.readAsText(file);
     }
 
+    let isFcmConfigured = false;
+    let isFcmEditOpen = false;
+
+    function toggleFcmEditForm(forceState) {
+      const form = document.getElementById("fcmEditForm");
+      const btn = document.getElementById("btnToggleFcmEdit");
+      const notice = document.getElementById("fcmConfiguredNotice");
+      const cancelBtn = document.getElementById("btnCancelFcmEdit");
+
+      if (typeof forceState === "boolean") {
+        isFcmEditOpen = forceState;
+      } else {
+        isFcmEditOpen = !isFcmEditOpen;
+      }
+
+      if (isFcmEditOpen) {
+        if (form) form.style.display = "block";
+        if (btn) {
+          btn.innerText = "✕ 收起編輯";
+          btn.style.background = "#475569";
+        }
+        if (cancelBtn) cancelBtn.style.display = "inline-block";
+      } else {
+        if (form) form.style.display = "none";
+        if (btn) {
+          btn.innerText = "✏️ 編輯憑證";
+          btn.style.background = "#0369a1";
+        }
+        if (cancelBtn) cancelBtn.style.display = "none";
+      }
+      if (notice && isFcmConfigured) {
+        notice.style.display = isFcmEditOpen ? "none" : "block";
+      }
+    }
+
     async function loadConfig() {
       try {
         const res = await fetch("/api/admin/get-config");
         if (res.status === 401) return logoutAdmin();
         const data = await res.json();
         const statusEl = document.getElementById("fcmKeyStatus");
+        const btnToggle = document.getElementById("btnToggleFcmEdit");
+        const btnQuickTest = document.getElementById("btnQuickTestFcm");
 
         if (data.has_v1) {
+          isFcmConfigured = true;
           statusEl.innerText = "● FCM HTTP v1 正常 (" + (data.v1_project_id || "有效") + ")";
           statusEl.className = "badge badge-30";
+          if (btnToggle) btnToggle.style.display = "inline-block";
+          if (btnQuickTest) btnQuickTest.style.display = "inline-block";
+          if (!isFcmEditOpen) {
+            toggleFcmEditForm(false);
+          }
         } else if (data.has_legacy_key) {
+          isFcmConfigured = false;
           statusEl.innerText = "▲ 舊版 FCM Key (" + data.legacy_key_preview + ")";
           statusEl.className = "badge badge-60";
+          if (btnToggle) btnToggle.style.display = "none";
+          if (btnQuickTest) btnQuickTest.style.display = "none";
+          toggleFcmEditForm(true);
         } else {
+          isFcmConfigured = false;
           statusEl.innerText = "○ 尚未設定推播憑證 (無法推播)";
           statusEl.className = "badge badge-60";
+          if (btnToggle) btnToggle.style.display = "none";
+          if (btnQuickTest) btnQuickTest.style.display = "none";
+          toggleFcmEditForm(true);
         }
       } catch (_) {}
     }
@@ -2130,7 +2195,10 @@ function renderAdminDashboardHtml(adminUsername) {
           msg.style.color = "#34d399";
           msg.innerText = "✅ " + data.message;
           document.getElementById("saJsonInput").value = "";
-          loadConfig();
+          await loadConfig();
+          setTimeout(() => {
+            toggleFcmEditForm(false);
+          }, 1500);
         } else {
           msg.style.color = "var(--err)";
           msg.innerText = "❌ " + (data.message || "驗證或儲存失敗");
