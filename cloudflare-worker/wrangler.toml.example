@@ -1,0 +1,16 @@
+name = "shop-radar-worker"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# 定時排程自動巡查 (VIP 會員 30 分鐘，普通會員 60 分鐘)
+[triggers]
+crons = ["*/30 * * * *"]
+
+# 綁定 KV 命名空間 (請在 Cloudflare 控制台建立後填入真實 ID)
+# [[kv_namespaces]]
+# binding = "RADAR_KV"
+# id = "your-kv-namespace-id"
+
+[vars]
+# 管理後台帳號 (可於 Cloudflare 控制台設定，或於網頁首次設定專屬管理員)
+# ADMIN_USERNAME = "admin"

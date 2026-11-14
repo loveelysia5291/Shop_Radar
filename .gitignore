@@ -53,4 +53,13 @@ client_secret*.json
 .env.*
 .dev.vars
 .wrangler/
+*.vars
+
+# Cloudflare Worker Server Configurations & Local Secrets
+cloudflare-worker/wrangler.toml
+cloudflare-worker/wrangler.json
+cloudflare-worker/.dev.vars
+cloudflare-worker/.wrangler/
+wrangler.toml
+wrangler.json
 
