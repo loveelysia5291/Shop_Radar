@@ -27,12 +27,20 @@ internal data class SubscriptionNotificationText(val title: String, val text: St
             val visible = alerts.filter(BackgroundAlertJournal::visible).distinctBy(BackgroundAlertJournal::identity)
             if (visible.isEmpty()) return null
             if (target.kind != RefreshKind.SHOP) {
+                val firstKind = visible.firstOrNull()?.kind.orEmpty()
+                val title = when (firstKind) {
+                    "降價" -> "📉【商品降價提醒】"
+                    "升值" -> "📈【商品價格調漲】"
+                    "已售出／缺貨" -> "⚠️【商品售出／缺貨】"
+                    "已下架／失效" -> "⚠️【商品下架／失效】"
+                    else -> "🔔【商品狀態更新】"
+                }
                 val lines = visible.map { alert ->
                     val price = record?.optLong("price", -1L) ?: -1L
                     val priceText = if (price >= 0 && (alert.kind == "降價" || alert.kind == "升值")) "（現價 NT$$price）" else ""
                     "${alert.shop} · ${alert.title} · ${alert.kind}$priceText"
                 }
-                return SubscriptionNotificationText("訂閱有更新", lines.joinToString("\n"))
+                return SubscriptionNotificationText(title, lines.joinToString("\n"))
             }
             val current = record?.let { saved -> ShopNewItems.read(saved).filter {
                 it.url in ShopNewItems.latestUrls(saved) && BackgroundAlertJournal.visible(

@@ -49,7 +49,12 @@ internal object RefreshRunner {
             error.message?.replace(Regex("https?://\\S+"), "[網址已隱藏]")?.take(240)?.takeIf { it.isNotBlank() }
                 ?: "暫時無法刷新；保留原有資料與比對基準。"
             else "暫時無法刷新；保留原有資料與比對基準。") }
-        if (allowed()) recordError(context, target, run, result, allowed)
+        if (allowed()) {
+            recordError(context, target, run, result, allowed)
+            if (result.error == null) {
+                AccountStore.get(context).notifyAppRefreshed(context)
+            }
+        }
         result
     }
 

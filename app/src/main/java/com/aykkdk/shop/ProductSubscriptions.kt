@@ -78,6 +78,13 @@ class ProductSubscriptionStore(private val context: Context) {
         AutomaticRefreshStore(context).remove(RefreshTarget(RefreshKind.PRODUCT, url))
         AccountStore.get(context).triggerCloudSync(context)
     }
+    fun update(url: String, block: (JSONObject) -> Unit): Boolean = synchronized(SubscriptionMutations.lock) {
+        val raw = prefs.getString(url, null) ?: return@synchronized false
+        val item = JSONObject(raw)
+        block(item)
+        prefs.edit().putString(url, item.toString()).apply()
+        true
+    }
     fun clearAll() = synchronized(SubscriptionMutations.lock) {
         prefs.edit().clear().apply()
     }

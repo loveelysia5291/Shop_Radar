@@ -2379,6 +2379,8 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
     var linkRequestId by remember { mutableIntStateOf(0) }
     var pendingShopRemoval by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingProductRemoval by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var showLightningLimitReachedDialog by remember { mutableStateOf<Int?>(null) }
+    var pendingLightningTarget by remember { mutableStateOf<Triple<String, String, Int>?>(null) }
     var notificationGranted by remember { mutableStateOf(Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         notificationGranted = granted
@@ -2516,10 +2518,31 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                     }
                     val eyebrow = if (item.optString("platform") == Market.BBOBO.label) "商品所在：$shopName" else shopName
                     val title = ProductDisplay.title(item.optString("title").ifBlank { "待取得商品資料" })
+                    val isLightning = item.optBoolean("lightningRefresh", false)
                     GlassCard(Modifier.fillMaxWidth()) { Column {
-                        SubscriptionCardCover(target, reading, "刷新這件商品", "取消商品訂閱",
+                        SubscriptionCardCover(
+                            target = target,
+                            reading = reading,
+                            refreshLabel = "刷新這件商品",
+                            removeLabel = "取消商品訂閱",
                             onRefresh = { SubscriptionRefreshQueue.request(context, target) },
-                            onRemove = { pendingProductRemoval = productUrl to item.optString("title").ifBlank { "這件商品" } }
+                            onRemove = { pendingProductRemoval = productUrl to item.optString("title").ifBlank { "這件商品" } },
+                            isLightning = isLightning,
+                            onToggleLightning = {
+                                if (isLightning) {
+                                    productStore.update(productUrl) { it.put("lightningRefresh", false) }
+                                    localVersion++
+                                    AccountStore.get(context).triggerCloudSync(context)
+                                } else {
+                                    val activeCount = productSubscriptions.count { it.optBoolean("lightningRefresh", false) }
+                                    val limit = AccountStore.get(context).getProductLimit()
+                                    if (limit != -1 && activeCount >= limit) {
+                                        showLightningLimitReachedDialog = activeCount
+                                    } else {
+                                        pendingLightningTarget = Triple(productUrl, title, activeCount)
+                                    }
+                                }
+                            }
                         ) { cover -> SubscriptionThumbnail(item, cover) }
                         val price = item.optLong("price", -1)
                         val error = listOf(item.optString("lastCheckError"), item.optString("lastRefreshError"))
@@ -2576,6 +2599,38 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                 localVersion++; pendingProductRemoval = null
             }) { Text("確定取消") } },
             dismissButton = { TextButton(onClick = { pendingProductRemoval = null }) { Text("保留訂閱") } })
+    }
+    showLightningLimitReachedDialog?.let { count ->
+        AlertDialog(
+            onDismissRequest = { showLightningLimitReachedDialog = null },
+            title = { Text("已達到上限") },
+            text = { Text("你目前已經達到上限\n目前已經開啟 $count 個閃電刷新商品。") },
+            confirmButton = {
+                TextButton(onClick = { showLightningLimitReachedDialog = null }) {
+                    Text("確定")
+                }
+            }
+        )
+    }
+    pendingLightningTarget?.let { (productUrl, title, count) ->
+        AlertDialog(
+            onDismissRequest = { pendingLightningTarget = null },
+            title = { Text("開啟閃電刷新？") },
+            text = { Text("要開始閃電刷新嗎？\n目前已經開啟 $count 個") },
+            confirmButton = {
+                TextButton(onClick = {
+                    productStore.update(productUrl) { it.put("lightningRefresh", true) }
+                    localVersion++
+                    AccountStore.get(context).triggerCloudSync(context)
+                    pendingLightningTarget = null
+                }) { Text("確定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingLightningTarget = null }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
@@ -2729,9 +2784,8 @@ private fun subscribeListing(context: android.content.Context, product: Product)
             "已訂閱競標：${product.title}"
         } else {
             val prodStore = ProductSubscriptionStore(context)
-            val maxAllowed = accountStore.getProductLimit()
-            if (maxAllowed != -1 && prodStore.list().size >= maxAllowed) {
-                return "商品追蹤已達上限（最多 $maxAllowed 個商品）。管理員可為您的帳號調升數量或開啟無限制！"
+            if (!isVip && prodStore.list().size >= 50) {
+                return "普通會員最多追蹤 50 個商品。請升級 VIP 會員或減少追蹤項目！"
             }
             if (product.platform == Market.FACEBOOK.label && FacebookCardReference.parse(product.url) != null) {
                 val actual = FacebookResolvedLinks.find(product.url)

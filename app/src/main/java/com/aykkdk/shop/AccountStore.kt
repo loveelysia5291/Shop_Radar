@@ -211,16 +211,21 @@ class AccountStore private constructor(private val context: Context) {
                 for (i in 0 until products.length()) {
                     val p = products.optJSONObject(i) ?: continue
                     val pUrl = p.optString("url")
-                    if (pUrl.isNotBlank() && !prodStore.contains(pUrl)) {
-                        val product = Product(
-                            title = p.optString("title", "訂閱商品"),
-                            price = p.optLong("price", 0L),
-                            platform = p.optString("platform", Market.fromPublicProductUrl(pUrl)?.label.orEmpty()),
-                            url = pUrl,
-                            image = p.optString("image", ""),
-                            shop = p.optString("shop", "")
-                        )
-                        runCatching { prodStore.add(product) }
+                    if (pUrl.isNotBlank()) {
+                        if (!prodStore.contains(pUrl)) {
+                            val product = Product(
+                                title = p.optString("title", "訂閱商品"),
+                                price = p.optLong("price", 0L),
+                                platform = p.optString("platform", Market.fromPublicProductUrl(pUrl)?.label.orEmpty()),
+                                url = pUrl,
+                                image = p.optString("image", ""),
+                                shop = p.optString("shop", "")
+                            )
+                            runCatching { prodStore.add(product) }
+                        }
+                        if (p.optBoolean("lightningRefresh", false)) {
+                            prodStore.update(pUrl) { it.put("lightningRefresh", true) }
+                        }
                     }
                 }
 
@@ -554,6 +559,7 @@ class AccountStore private constructor(private val context: Context) {
                     put("platform", p.optString("platform"))
                     put("price", p.optLong("price", 0L))
                     put("status", p.optString("status", "unknown"))
+                    put("lightningRefresh", p.optBoolean("lightningRefresh", false))
                 })
             }
 
@@ -689,6 +695,24 @@ class AccountStore private constructor(private val context: Context) {
                     syncToCloud(context.applicationContext)
                 }
             } catch (_: Exception) {}
+        }
+    }
+
+    fun notifyAppRefreshed(context: Context) {
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching {
+                if (isLoggedIn() && !isMaintenanceMode()) {
+                    val activeToken = getToken()
+                    val url = URL("${getServerUrl()}/api/user/refreshed")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Authorization", "Bearer $activeToken")
+                    conn.connectTimeout = 6000
+                    conn.readTimeout = 6000
+                    conn.responseCode
+                    conn.disconnect()
+                }
+            }
         }
     }
 
