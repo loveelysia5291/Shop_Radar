@@ -71,7 +71,6 @@ fun AboutScreen(
 
     var showAuthDialog by remember { mutableStateOf(false) }
     var showLogoutConfirmDialog by remember { mutableStateOf(false) }
-    var showDeployGuideDialog by remember { mutableStateOf(false) }
 
     val notificationsEnabled = remember { NotificationManagerCompat.from(context).areNotificationsEnabled() }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -416,7 +415,6 @@ private fun AuthDialog(
     var inputPassword by remember { mutableStateOf("") }
 
     var inputServerUrl by remember { mutableStateOf(currentServerUrl) }
-    var selectedRole by remember { mutableStateOf("standard") } // "standard" (1小時) 或 "low" (1.5小時)
     var passwordVisible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -543,26 +541,24 @@ private fun AuthDialog(
                     )
 
                     Spacer(Modifier.height(10.dp))
-
-                    // 巡查權限選擇
-                    Text("選擇巡查權限等級：", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        FilterChip(
-                            selected = selectedRole == "standard",
-                            onClick = { selectedRole = "standard" },
-                            label = { Text("VIP 會員 (每 1 小時巡查)") },
-                            modifier = Modifier.weight(1f)
-                        )
-                        FilterChip(
-                            selected = selectedRole == "low",
-                            onClick = { selectedRole = "low" },
-                            label = { Text("普通會員 (每 1.5 小時巡查)") },
-                            modifier = Modifier.weight(1f)
-                        )
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🎁", fontSize = 18.sp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "首次註冊贈送 7 天 VIP 高頻巡查！(已自動綁定本裝置)",
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 } else {
                     // 登入模式
@@ -644,8 +640,7 @@ private fun AuthDialog(
                                         email = inputEmail,
                                         username = inputUsername,
                                         pass = inputPassword,
-                                        serverUrl = inputServerUrl,
-                                        role = selectedRole
+                                        serverUrl = inputServerUrl
                                     )
                                 } else {
                                     accountStore.login(inputUsername, inputPassword, inputServerUrl)
@@ -680,6 +675,13 @@ private fun AuthDialog(
     }
 }
 
+private enum class ForgotStep {
+    REQUEST_CODE,
+    VERIFY_AND_RESET,
+    ADMIN_HELP_DONE,
+    RESET_SUCCESS
+}
+
 @Composable
 private fun ForgotPasswordDialog(
     currentServerUrl: String,
@@ -690,11 +692,16 @@ private fun ForgotPasswordDialog(
     val scope = rememberCoroutineScope()
     val accountStore = remember { AccountStore.get(context) }
 
+    var step by remember { mutableStateOf(ForgotStep.REQUEST_CODE) }
     var email by remember { mutableStateOf("") }
-    var isSubmitted by remember { mutableStateOf(false) }
-    var successMsg by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf("") }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -712,7 +719,12 @@ private fun ForgotPasswordDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (isSubmitted) "密碼已重設發送" else "忘記密碼 - 寄送新密碼",
+                        when (step) {
+                            ForgotStep.REQUEST_CODE -> "忘記密碼"
+                            ForgotStep.VERIFY_AND_RESET -> "輸入驗證碼並設定密碼"
+                            ForgotStep.ADMIN_HELP_DONE -> "求助請求已送出"
+                            ForgotStep.RESET_SUCCESS -> "密碼重設成功"
+                        },
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -723,253 +735,338 @@ private fun ForgotPasswordDialog(
 
                 Spacer(Modifier.height(10.dp))
 
-                if (isSubmitted) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "新密碼已發送至您的電子信箱！",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
+                when (step) {
+                    ForgotStep.REQUEST_CODE -> {
+                        Text(
+                            "請輸入註冊的電子信箱以寄送 6 位數驗證碼；若電子信箱無法收到郵件，亦可直接點選「向管理員求助」。",
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(14.dp))
+
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = { Text("註冊電子信箱 (Email)") },
+                            placeholder = { Text("example@gmail.com") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            leadingIcon = { Icon(Icons.Default.Email, null) }
+                        )
+
+                        errorMessage?.let { err ->
                             Spacer(Modifier.height(10.dp))
-                            Text(
-                                successMsg.ifBlank { "系統已重設一組全新密碼並寄送至您的註冊電子信箱 ($email)，請前往信箱查收並使用新密碼登入。" },
-                                fontSize = 13.sp,
-                                lineHeight = 19.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                         }
-                    }
 
-                    Spacer(Modifier.height(20.dp))
+                        Spacer(Modifier.height(20.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        Button(
-                            onClick = {
-                                onSuccess()
-                            },
-                            shape = RoundedCornerShape(12.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("前往登入")
-                        }
-                    }
-                } else {
-                    Text(
-                        "請輸入您註冊的電子信箱，系統將自動重設一組全新密碼並發送至您的信箱。",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(14.dp))
+                            TextButton(
+                                onClick = {
+                                    if (email.isBlank() || !email.contains("@")) {
+                                        errorMessage = "請先填寫註冊電子信箱再向管理員求助"
+                                        return@TextButton
+                                    }
+                                    scope.launch {
+                                        loading = true
+                                        errorMessage = null
+                                        accountStore.requestAdminPasswordReset(email.trim(), currentServerUrl)
+                                            .onSuccess {
+                                                loading = false
+                                                statusMessage = it
+                                                step = ForgotStep.ADMIN_HELP_DONE
+                                            }.onFailure {
+                                                loading = false
+                                                errorMessage = it.message ?: "向管理員求助失敗"
+                                            }
+                                    }
+                                },
+                                enabled = !loading
+                            ) {
+                                Text("🆘 向管理員求助", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                            }
 
-                    OutlinedTextField(
-                        value = email,
-                        onValueChange = { email = it },
-                        label = { Text("註冊電子信箱 (Email)") },
-                        placeholder = { Text("example@gmail.com") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        leadingIcon = { Icon(Icons.Default.Email, null) }
-                    )
-
-                    errorMessage?.let { err ->
-                        Spacer(Modifier.height(10.dp))
-                        Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                    }
-
-                    Spacer(Modifier.height(20.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(onClick = onDismiss) { Text("取消") }
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                if (email.isBlank() || !email.contains("@")) {
-                                    errorMessage = "請填寫正確格式的註冊電子信箱"
-                                    return@Button
-                                }
-                                scope.launch {
-                                    loading = true
-                                    errorMessage = null
-                                    accountStore.requestPasswordReset(email.trim(), currentServerUrl)
-                                        .onSuccess {
-                                            loading = false
-                                            successMsg = it.message
-                                            isSubmitted = true
-                                        }.onFailure {
-                                            loading = false
-                                            errorMessage = it.message ?: "發送失敗，請確認信箱是否已註冊"
+                            Row {
+                                TextButton(onClick = onDismiss) { Text("取消") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        if (email.isBlank() || !email.contains("@")) {
+                                            errorMessage = "請填寫正確格式的註冊電子信箱"
+                                            return@Button
                                         }
+                                        scope.launch {
+                                            loading = true
+                                            errorMessage = null
+                                            accountStore.requestPasswordReset(email.trim(), currentServerUrl)
+                                                .onSuccess {
+                                                    loading = false
+                                                    statusMessage = it
+                                                    step = ForgotStep.VERIFY_AND_RESET
+                                                }.onFailure {
+                                                    loading = false
+                                                    errorMessage = it.message ?: "寄送驗證碼失敗"
+                                                }
+                                        }
+                                    },
+                                    enabled = !loading,
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    if (loading) {
+                                        CircularProgressIndicator(Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("處理中...")
+                                    } else {
+                                        Text("📧 寄送驗證碼")
+                                    }
                                 }
-                            },
-                            enabled = !loading,
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            if (loading) {
-                                CircularProgressIndicator(Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                                Spacer(Modifier.width(6.dp))
-                                Text("寄送中...")
-                            } else {
-                                Text("發送新密碼至信箱")
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = {
+                                if (email.isBlank() || !email.contains("@")) {
+                                    errorMessage = "請先填寫註冊電子信箱"
+                                } else {
+                                    errorMessage = null
+                                    step = ForgotStep.VERIFY_AND_RESET
+                                }
+                            }) {
+                                Text("已有驗證碼？直接設定新密碼", fontSize = 12.sp)
                             }
                         }
                     }
-                }
-            }
-        }
-    }
-}
 
+                    ForgotStep.VERIFY_AND_RESET -> {
+                        Text(
+                            "請輸入信箱 ($email) 收到的 6 位數驗證碼，並設定您的新密碼：",
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(14.dp))
 
-@Composable
-private fun DeployGuideDialog(onDismiss: () -> Unit) {
-    val uriHandler = LocalUriHandler.current
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { code = it },
+                            label = { Text("6 位數驗證碼") },
+                            placeholder = { Text("請輸入 6 碼驗證碼") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            leadingIcon = { Icon(Icons.Default.Lock, null) }
+                        )
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth(0.92f).heightIn(max = 680.dp),
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface
-        ) {
-            Column(Modifier.padding(22.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Cloudflare Worker 架設指南", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null) }
-                }
+                        Spacer(Modifier.height(10.dp))
 
-                Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = newPassword,
+                            onValueChange = { newPassword = it },
+                            label = { Text("新密碼 (至少 6 碼)") },
+                            placeholder = { Text("請輸入全新密碼") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            leadingIcon = { Icon(Icons.Default.Lock, null) }
+                        )
 
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    item {
+                        Spacer(Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = confirmPassword,
+                            onValueChange = { confirmPassword = it },
+                            label = { Text("再次確認新密碼") },
+                            placeholder = { Text("請再次輸入全新密碼") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            leadingIcon = { Icon(Icons.Default.Lock, null) },
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
+                                }
+                            }
+                        )
+
+                        errorMessage?.let { err ->
+                            Spacer(Modifier.height(10.dp))
+                            Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        }
+
+                        Spacer(Modifier.height(20.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        loading = true
+                                        errorMessage = null
+                                        accountStore.requestAdminPasswordReset(email.trim(), currentServerUrl)
+                                            .onSuccess {
+                                                loading = false
+                                                statusMessage = it
+                                                step = ForgotStep.ADMIN_HELP_DONE
+                                            }.onFailure {
+                                                loading = false
+                                                errorMessage = it.message ?: "向管理員求助失敗"
+                                            }
+                                    }
+                                },
+                                enabled = !loading
+                            ) {
+                                Text("收不到驗證碼？向管理員求助", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                            }
+
+                            Row {
+                                TextButton(onClick = { step = ForgotStep.REQUEST_CODE }) { Text("上一步") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        if (code.isBlank()) {
+                                            errorMessage = "請輸入 6 位數驗證碼"
+                                            return@Button
+                                        }
+                                        if (newPassword.length < 6) {
+                                            errorMessage = "新密碼長度需至少 6 個字元"
+                                            return@Button
+                                        }
+                                        if (newPassword != confirmPassword) {
+                                            errorMessage = "兩次輸入的新密碼不一致"
+                                            return@Button
+                                        }
+                                        scope.launch {
+                                            loading = true
+                                            errorMessage = null
+                                            accountStore.resetPassword(email.trim(), code.trim(), newPassword.trim(), currentServerUrl)
+                                                .onSuccess {
+                                                    loading = false
+                                                    statusMessage = it
+                                                    step = ForgotStep.RESET_SUCCESS
+                                                }.onFailure {
+                                                    loading = false
+                                                    errorMessage = it.message ?: "重設密碼失敗"
+                                                }
+                                        }
+                                    },
+                                    enabled = !loading,
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    if (loading) {
+                                        CircularProgressIndicator(Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("驗證中...")
+                                    } else {
+                                        Text("確認重設密碼")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ForgotStep.ADMIN_HELP_DONE -> {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(
-                                "架設 Cloudflare Worker 完全免費，伺服器在雲端 24 小時定時輪詢監控並透過 Google FCM 發送推播，徹底解決手機被殺後台問題！",
-                                modifier = Modifier.padding(12.dp),
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                lineHeight = 18.sp
-                            )
+                            Column(Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "求助申請已送出！",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    "已成功為信箱 ($email) 向管理員登記重設密碼求助。\n\n管理員在收到求助後會直接為您重設密碼。請聯繫管理員為您設定新密碼後直接登入！",
+                                    fontSize = 13.sp,
+                                    lineHeight = 19.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(20.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            Button(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) {
+                                Text("我知道了")
+                            }
                         }
                     }
 
-                    item {
-                        StepItem(
-                            stepNumber = "1",
-                            title = "前往 Cloudflare 建立 Worker",
-                            description = "登入 https://www.cloudflare.com/zh-tw/，點選「Workers 和 Pages」->「建立 Worker」，名稱可取名為 shop-radar-worker。"
-                        )
-                    }
+                    ForgotStep.RESET_SUCCESS -> {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "密碼重設成功！",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    statusMessage.ifBlank { "您的新密碼已設定生效，請使用新密碼登入。" },
+                                    fontSize = 13.sp,
+                                    lineHeight = 19.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
 
-                    item {
-                        StepItem(
-                            stepNumber = "2",
-                            title = "貼入專案程式碼並部署",
-                            description = "點選「編輯代碼 (Edit code)」，將專案中 cloudflare-worker/src/index.js 的程式碼全部複製貼入並點擊「儲存並部署」。"
-                        )
-                    }
+                        Spacer(Modifier.height(20.dp))
 
-                    item {
-                        StepItem(
-                            stepNumber = "3",
-                            title = "設定定時觸發程序 (Cron Triggers)",
-                            description = "在 Worker 的「觸發程序 (Triggers)」中，新增 Cron 觸發程序並填入 */30 * * * *（系統排程每 30 分鐘自動執行：VIP 會員每 1 小時巡查，普通會員每 1.5 小時巡查）。"
-                        )
-                    }
-
-                    item {
-                        StepItem(
-                            stepNumber = "4",
-                            title = "建立並綁定 KV 資料表",
-                            description = "在 Cloudflare 的「儲存和資料庫 -> KV」建立一個名稱為 RADAR_KV 的命名空間，並回到 Worker 的「設定 -> 變數 -> KV 命名空間繫結」綁定為 RADAR_KV。"
-                        )
-                    }
-
-                    item {
-                        StepItem(
-                            stepNumber = "5",
-                            title = "設定 Firebase FCM 伺服器金鑰",
-                            description = "在 Firebase 控制台的「專案設定 -> Cloud Messaging」取得 Server Key，並在 Cloudflare Worker 的「設定 -> 變數 -> 環境變數」新增 FCM_SERVER_KEY 變數。"
-                        )
-                    }
-
-                    item {
-                        StepItem(
-                            stepNumber = "6",
-                            title = "開啟後台管理系統",
-                            description = "瀏覽網址 /admin 即可開啟登入後台，視覺化查看所有連線手機與調整 30 分鐘 / 1 小時權限。"
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(14.dp))
-
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    TextButton(onClick = { uriHandler.openUri("https://www.cloudflare.com/zh-tw/") }) {
-                        Icon(Icons.Default.OpenInNew, null, Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("開啟 Cloudflare 官網", fontSize = 13.sp)
-                    }
-                    Button(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) {
-                        Text("我知道了")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            Button(onClick = onSuccess, shape = RoundedCornerShape(12.dp)) {
+                                Text("前往登入")
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun StepItem(stepNumber: String, title: String, description: String) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-        Box(
-            modifier = Modifier
-                .size(26.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(stepNumber, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Spacer(Modifier.height(2.dp))
-            Text(description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
         }
     }
 }

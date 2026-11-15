@@ -3,6 +3,7 @@ package com.aykkdk.shop
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -94,6 +95,21 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     fun getLastSyncTime(): Long = prefs.getLong("last_sync_time", 0L)
+
+    fun getDeviceId(): String {
+        val saved = prefs.getString("unique_device_id", null)
+        if (!saved.isNullOrBlank()) return saved
+        val androidId = try {
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        } catch (_: Exception) { null }
+        val finalId = if (!androidId.isNullOrBlank() && androidId != "9774d56d682e549c") {
+            androidId
+        } else {
+            UUID.randomUUID().toString().replace("-", "")
+        }
+        prefs.edit().putString("unique_device_id", finalId).apply()
+        return finalId
+    }
 
     fun isMaintenanceMode(): Boolean = prefs.getBoolean("server_maintenance", false)
     fun getMaintenanceMessage(): String = prefs.getString("server_maintenance_message", "").orEmpty()
@@ -287,7 +303,6 @@ class AccountStore private constructor(private val context: Context) {
         username: String,
         pass: String,
         serverUrl: String? = null,
-        role: String = "standard",
         captchaId: String = "",
         captchaAnswer: String = ""
     ): Result<String> = withContext(Dispatchers.IO) {
@@ -305,9 +320,9 @@ class AccountStore private constructor(private val context: Context) {
                 put("email", email.trim())
                 put("username", username.trim())
                 put("password", pass.trim())
+                put("deviceId", getDeviceId())
                 if (captchaId.isNotBlank()) put("captchaId", captchaId)
                 if (captchaAnswer.isNotBlank()) put("captchaAnswer", captchaAnswer.trim())
-                put("role", role)
             }.toString()
 
             conn.outputStream.use { it.write(payload.toByteArray()) }
@@ -320,7 +335,7 @@ class AccountStore private constructor(private val context: Context) {
                 val token = json.optString("token")
                 val uname = json.optString("username", username)
                 val resEmail = json.optString("email", email)
-                val resRole = json.optString("role", role)
+                val resRole = json.optString("role", "vip")
                 serverUrl?.let { setServerUrl(it) }
                 prefs.edit()
                     .putString("username", uname)
@@ -331,7 +346,7 @@ class AccountStore private constructor(private val context: Context) {
 
                 val fcm = getFcmToken()
                 if (fcm.isNotBlank()) uploadFcmToken(fcm)
-                "註冊成功並已啟動雲端推播"
+                json.optString("message", "註冊成功！已贈送 7 天 VIP 權限")
             } else {
                 throw Exception(json.optString("message", "註冊失敗 ($status)"))
             }
@@ -339,14 +354,12 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     /**
-     * 忘記密碼：申請 6 碼重設驗證碼
+     * 忘記密碼：申請發送 6 碼驗證碼至信箱
      */
     suspend fun requestPasswordReset(
         email: String,
-        serverUrl: String? = null,
-        captchaId: String = "",
-        captchaAnswer: String = ""
-    ): Result<ForgotPasswordResponse> = withContext(Dispatchers.IO) {
+        serverUrl: String? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
             val url = URL("$endpoint/api/auth/forgot-password/request")
@@ -359,8 +372,6 @@ class AccountStore private constructor(private val context: Context) {
 
             val payload = JSONObject().apply {
                 put("email", email.trim())
-                if (captchaId.isNotBlank()) put("captchaId", captchaId)
-                if (captchaAnswer.isNotBlank()) put("captchaAnswer", captchaAnswer.trim())
             }.toString()
 
             conn.outputStream.use { it.write(payload.toByteArray()) }
@@ -370,13 +381,44 @@ class AccountStore private constructor(private val context: Context) {
 
             val json = JSONObject(text.ifBlank { "{}" })
             if (json.optBoolean("success", false)) {
-                ForgotPasswordResponse(
-                    success = true,
-                    message = json.optString("message", "新密碼已發送至您的註冊電子信箱"),
-                    devCode = json.optString("devCode").takeIf { it.isNotBlank() }
-                )
+                json.optString("message", "驗證碼已發送至您的電子信箱，請查收並輸入！")
             } else {
                 throw Exception(json.optString("message", "申請重設密碼失敗 ($status)"))
+            }
+        }
+    }
+
+    /**
+     * 忘記密碼：向管理員求助（用於電子郵件無法寄送時，管理員可在後台直接修改密碼）
+     */
+    suspend fun requestAdminPasswordReset(
+        email: String,
+        serverUrl: String? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val endpoint = (serverUrl ?: getServerUrl()).trimEnd('/')
+            val url = URL("$endpoint/api/auth/forgot-password/admin-help")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            val payload = JSONObject().apply {
+                put("email", email.trim())
+            }.toString()
+
+            conn.outputStream.use { it.write(payload.toByteArray()) }
+            val status = conn.responseCode
+            val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+
+            val json = JSONObject(text.ifBlank { "{}" })
+            if (json.optBoolean("success", false)) {
+                json.optString("message", "已向管理員送出求助！管理員在收到求助後會為您重設密碼。")
+            } else {
+                throw Exception(json.optString("message", "向管理員求助失敗 ($status)"))
             }
         }
     }
