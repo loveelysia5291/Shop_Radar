@@ -674,8 +674,21 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             val alerts = mutableListOf<ProductSubscriptionAlert>()
             val errors = mutableListOf<String>()
             try {
-                targets.forEach { target ->
+                var lastItemFinishedAt = 0L
+                targets.forEachIndexed { index, target ->
+                    if (!subscriptionRefreshing) return@launch
+                    val now = System.currentTimeMillis()
+                    // 刷新一個物品回傳後等 5~10 秒再繼續下一個刷新，避免被購物網站封禁
+                    // 若時間不重疊（距離上次刷新完成已超過該隨機間隔）則直接執行，僅對時間重疊才等待調整
+                    if (index > 0 && lastItemFinishedAt > 0L) {
+                        val minInterval = (5000L..10000L).random()
+                        val elapsed = now - lastItemFinishedAt
+                        if (elapsed < minInterval) {
+                            delay(minInterval - elapsed)
+                        }
+                    }
                     val result = RefreshRunner.refresh(context, target) { subscriptionRefreshId == requestId }
+                    lastItemFinishedAt = System.currentTimeMillis()
                     alerts.addAll(result.alerts)
                     result.error?.let(errors::add)
                 }
@@ -705,7 +718,20 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             }
             val errors = mutableListOf<String>()
             try {
-                targets.forEach { target -> RefreshRunner.refresh(context, target).error?.let(errors::add) }
+                var lastAuctionFinishedAt = 0L
+                targets.forEachIndexed { index, target ->
+                    if (!auctionRefreshing) return@launch
+                    val now = System.currentTimeMillis()
+                    if (index > 0 && lastAuctionFinishedAt > 0L) {
+                        val minInterval = (5000L..10000L).random()
+                        val elapsed = now - lastAuctionFinishedAt
+                        if (elapsed < minInterval) {
+                            delay(minInterval - elapsed)
+                        }
+                    }
+                    RefreshRunner.refresh(context, target).error?.let(errors::add)
+                    lastAuctionFinishedAt = System.currentTimeMillis()
+                }
                 SubscriptionCleanupPolicy.cleanExpired(context)
                 if (errors.isNotEmpty()) warning = "${errors.size} 筆競標刷新未完成。\n${errors.distinct().take(3).joinToString("\n")}"
                 AccountStore.get(context).triggerCloudSync(context)
