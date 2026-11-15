@@ -46,7 +46,7 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     companion object {
-        const val DEFAULT_SERVER_URL = "https://shop-radar-worker.adobeado909123.workers.dev"
+        val DEFAULT_SERVER_URL: String get() = CloudEndpointSecurity.getServerUrl()
 
         @Volatile
         private var instance: AccountStore? = null
@@ -78,13 +78,27 @@ class AccountStore private constructor(private val context: Context) {
     }
 
     fun getServerUrl(): String {
-        val raw = prefs.getString("server_url", DEFAULT_SERVER_URL).orEmpty().trim()
-        return if (raw.isBlank()) DEFAULT_SERVER_URL else raw.trimEnd('/')
+        val enc = prefs.getString("enc_server_url", null)
+        if (!enc.isNullOrBlank()) {
+            val decrypted = CloudEndpointSecurity.decryptCustomUrl(enc)
+            if (!decrypted.isNullOrBlank()) return decrypted.trimEnd('/')
+        }
+        val raw = prefs.getString("server_url", null)
+        if (!raw.isNullOrBlank()) {
+            setServerUrl(raw)
+            return raw.trim().trimEnd('/')
+        }
+        return DEFAULT_SERVER_URL
     }
 
     fun setServerUrl(url: String) {
         val cleaned = url.trim().trimEnd('/')
-        prefs.edit().putString("server_url", cleaned.ifBlank { DEFAULT_SERVER_URL }).apply()
+        if (cleaned.isBlank() || cleaned == DEFAULT_SERVER_URL) {
+            prefs.edit().remove("enc_server_url").remove("server_url").apply()
+        } else {
+            val enc = CloudEndpointSecurity.encryptCustomUrl(cleaned)
+            prefs.edit().putString("enc_server_url", enc).remove("server_url").apply()
+        }
     }
 
     fun getFcmToken(): String = prefs.getString("fcm_token", "").orEmpty()
@@ -186,7 +200,13 @@ class AccountStore private constructor(private val context: Context) {
                 setMaintenanceMode(false)
             }
             if (json.optBoolean("success", false)) {
-                val vault = json.optJSONObject("vault") ?: JSONObject()
+                var vault = json.optJSONObject("vault") ?: JSONObject()
+                if (json.optBoolean("encrypted", false) && json.has("payload")) {
+                    val decrypted = VaultCrypto.decrypt(json.getString("payload"))
+                    if (!decrypted.isNullOrBlank()) {
+                        runCatching { vault = JSONObject(decrypted) }
+                    }
+                }
                 val products = vault.optJSONArray("products") ?: JSONArray()
                 val stores = vault.optJSONArray("stores") ?: JSONArray()
                 val auctions = vault.optJSONArray("auctions") ?: JSONArray()
@@ -577,13 +597,35 @@ class AccountStore private constructor(private val context: Context) {
                 for (i in 0 until storesArray.length()) put(storesArray.get(i))
             }
 
-            val payload = JSONObject().apply {
+            // 完整原始訂閱資料結構 (端到端加密前)
+            val rawVault = JSONObject().apply {
                 put("products", prodsArray)
                 put("stores", storesArray)
                 put("subscriptions", subsArray)
                 put("auctions", auctionsArray)
-                put("fcm_token", getFcmToken())
             }.toString()
+
+            // 執行客戶端端到端 AES-256-GCM 加密，確保網路傳輸全程加密，中間人與代理無法外洩任何商品與賣場
+            val encryptedVault = VaultCrypto.encrypt(rawVault)
+            val payload = if (encryptedVault != null) {
+                JSONObject().apply {
+                    put("encrypted", true)
+                    put("payload", encryptedVault)
+                    put("products_count", prodsArray.length())
+                    put("stores_count", storesArray.length())
+                    put("auctions_count", auctionsArray.length())
+                    put("subscriptions_count", subsArray.length())
+                    put("fcm_token", getFcmToken())
+                }.toString()
+            } else {
+                JSONObject().apply {
+                    put("products", prodsArray)
+                    put("stores", storesArray)
+                    put("subscriptions", subsArray)
+                    put("auctions", auctionsArray)
+                    put("fcm_token", getFcmToken())
+                }.toString()
+            }
 
             val url = URL("${getServerUrl()}/api/sync")
             val conn = url.openConnection() as HttpURLConnection
