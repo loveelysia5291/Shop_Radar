@@ -169,6 +169,8 @@ object ProductSubscriptionDecision {
             snapshot.status == "removed" && oldStatus != "removed" -> ProductSubscriptionAlert(shop, title, "已下架／失效", item.optBoolean("isAdult"), productUrl = item.optString("url"))
             snapshot.status !in setOf("sold", "removed") && snapshot.price != null && oldPrice >= 0 && snapshot.price < oldPrice ->
                 ProductSubscriptionAlert(shop, title, "降價", item.optBoolean("isAdult"), productUrl = item.optString("url"))
+            snapshot.status !in setOf("sold", "removed") && snapshot.price != null && oldPrice >= 0 && snapshot.price > oldPrice ->
+                ProductSubscriptionAlert(shop, title, "升值", item.optBoolean("isAdult"), productUrl = item.optString("url"))
             else -> null
         }
         item.put("lastAttemptAt", now)

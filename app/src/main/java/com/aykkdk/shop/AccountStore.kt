@@ -66,7 +66,12 @@ class AccountStore private constructor(private val context: Context) {
         val r = getRole()
         return r == "standard" || r == "vip" || r == "admin"
     }
-    fun getDefaultRefreshInterval(): Int = if (isVip()) 60 else 90
+    fun getDefaultRefreshInterval(): Int = if (isVip()) 10 else 90
+
+    fun getProductLimit(): Int = prefs.getInt("product_limit", 2)
+    fun setProductLimit(limit: Int) {
+        prefs.edit().putInt("product_limit", limit).apply()
+    }
 
     fun getServerUrl(): String {
         val enc = prefs.getString("enc_server_url", null)
@@ -246,6 +251,12 @@ class AccountStore private constructor(private val context: Context) {
                 }
 
                 val role = json.optString("role", getRole())
+                if (json.has("limits")) {
+                    val lim = json.optJSONObject("limits")
+                    if (lim != null && lim.has("products")) {
+                        setProductLimit(lim.optInt("products", 2))
+                    }
+                }
                 prefs.edit()
                     .putLong("last_sync_time", System.currentTimeMillis())
                     .putString("user_role", role)
@@ -644,7 +655,13 @@ class AccountStore private constructor(private val context: Context) {
             if (json.optBoolean("success", false)) {
                 val now = System.currentTimeMillis()
                 val role = json.optString("role", getRole())
-                val freq = json.optString("check_frequency", if (role == "low") "每 1.5 小時" else "每 1 小時")
+                val freq = json.optString("check_frequency", if (role == "low") "每 1.5 小時" else "每 10 分鐘")
+                if (json.has("limits")) {
+                    val lim = json.optJSONObject("limits")
+                    if (lim != null && lim.has("products")) {
+                        setProductLimit(lim.optInt("products", 2))
+                    }
+                }
                 prefs.edit()
                     .putLong("last_sync_time", now)
                     .putString("user_role", role)

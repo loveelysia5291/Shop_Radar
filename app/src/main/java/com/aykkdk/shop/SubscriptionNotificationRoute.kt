@@ -29,7 +29,7 @@ internal data class SubscriptionNotificationText(val title: String, val text: St
             if (target.kind != RefreshKind.SHOP) {
                 val lines = visible.map { alert ->
                     val price = record?.optLong("price", -1L) ?: -1L
-                    val priceText = if (price >= 0 && alert.kind == "降價") "（現價 NT$$price）" else ""
+                    val priceText = if (price >= 0 && (alert.kind == "降價" || alert.kind == "升值")) "（現價 NT$$price）" else ""
                     "${alert.shop} · ${alert.title} · ${alert.kind}$priceText"
                 }
                 return SubscriptionNotificationText("訂閱有更新", lines.joinToString("\n"))

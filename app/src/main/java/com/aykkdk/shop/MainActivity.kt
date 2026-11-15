@@ -119,7 +119,7 @@ private fun AdaptiveCardGrid(
 @Composable
 private fun RadarNavigation(selected: Int, onSelect: (Int) -> Unit) {
     val buttons: @Composable () -> Unit = {
-        listOf("搜尋", "訂閱", "競拍", "工具", "關於").forEachIndexed { i, name ->
+        listOf("搜尋", "訂閱", "競拍", "關於").forEachIndexed { i, name ->
             val active = selected == i
             val scale by animateFloatAsState(if (active) 1.08f else 1f, tween(220), label = "tabScale")
             val background by animateColorAsState(if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent, tween(220), label = "tabBackground")
@@ -133,14 +133,13 @@ private fun RadarNavigation(selected: Int, onSelect: (Int) -> Unit) {
                     0 -> Icons.Default.Search
                     1 -> Icons.Default.Store
                     2 -> Icons.Default.Timer
-                    3 -> Icons.Default.Build
                     else -> Icons.Default.Person
                 }, name)
             }
         }
     }
     LiquidGlassSurface(
-        Modifier.widthIn(max = 380.dp).fillMaxWidth(0.96f),
+        Modifier.widthIn(max = 320.dp).fillMaxWidth(0.88f),
         shape = RoundedCornerShape(30.dp)
     ) {
         Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly,
@@ -426,13 +425,13 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     val uriHandler = LocalUriHandler.current
     // Search is deliberately the first rendered screen. The foreground auction
     // monitor is lifecycle-owned below; opening/switching tabs does not create extra polls.
-    val pager = rememberPagerState(initialPage = 0, pageCount = { 5 })
+    val pager = rememberPagerState(initialPage = 0, pageCount = { 4 })
     val pageFling = PagerDefaults.flingBehavior(pager)
     val navigationScope = rememberCoroutineScope()
     val tab = pager.currentPage
     LaunchedEffect(openAuctions) { if (openAuctions > 0) pager.animateScrollToPage(2) }
     LaunchedEffect(fcmTargetTab) {
-        if (fcmTargetTab in 0..4) {
+        if (fcmTargetTab in 0..3) {
             pager.animateScrollToPage(fcmTargetTab)
             onFcmTabConsumed()
         }
@@ -440,7 +439,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     LaunchedEffect(pager.isScrollInProgress) {
         if (!pager.isScrollInProgress && kotlin.math.abs(pager.currentPageOffsetFraction) > 0.001f) {
             val target = if (kotlin.math.abs(pager.currentPageOffsetFraction) >= 0.5f) {
-                if (pager.currentPageOffsetFraction > 0) (pager.currentPage + 1).coerceAtMost(4)
+                if (pager.currentPageOffsetFraction > 0) (pager.currentPage + 1).coerceAtMost(3)
                 else (pager.currentPage - 1).coerceAtLeast(0)
             } else {
                 pager.currentPage
@@ -1703,8 +1702,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     onAuctionAdded = { navigationScope.launch { pager.animateScrollToPage(2) } })
                 2 -> AuctionScreen(modifier, foreground && pager.settledPage == 2,
                     refreshing = auctionRefreshing, onWarning = { warning = it })
-                3 -> LogisticsTrackingScreen(modifier)
-                4 -> AboutScreen(modifier, onNavigateToTab = { i -> navigationScope.launch { pager.animateScrollToPage(i) } })
+                3 -> AboutScreen(modifier, onNavigateToTab = { i -> navigationScope.launch { pager.animateScrollToPage(i) } })
 
             }
             }
@@ -1887,13 +1885,33 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         startupSubscriptionNotice?.filter { AdultVisibility.unlocked || !(it.isAdult || AdultVisibility.adultText(it.title) || AdultVisibility.adultText(it.shop)) }?.takeIf { it.isNotEmpty() }?.let { alerts ->
             if (warning == null && captureDiagnostic == null) AlertDialog(
                 onDismissRequest = { startupSubscriptionNotice = null },
-                title = { Text(if (alerts.any { it.kind == "新品" }) "有新商品加入" else "訂閱商品有更新") },
+                title = {
+                    Text(when {
+                        alerts.any { it.kind == "降價" } -> "📉 商品降價通知"
+                        alerts.any { it.kind == "升值" } -> "📈 商品調漲（升值）通知"
+                        alerts.any { it.kind == "新品" } -> "🔔 店家新品上架"
+                        else -> "🔔 訂閱項目狀態異動"
+                    })
+                },
                 text = {
                     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         items(alerts) { alert ->
                             Column(Modifier.fillMaxWidth()) {
-                                Text(alert.shop, style = MaterialTheme.typography.titleSmall)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val tag = when (alert.kind) {
+                                        "降價" -> "【降價】"
+                                        "升值" -> "【升值】"
+                                        "新品" -> "【新品】"
+                                        "已售出／缺貨" -> "【售出】"
+                                        "已下架／失效" -> "【下架】"
+                                        else -> "【${alert.kind}】"
+                                    }
+                                    Text(tag, style = MaterialTheme.typography.labelMedium,
+                                        color = if (alert.kind == "降價") Color(0xFF16A34A) else if (alert.kind == "升值") Color(0xFFDC2626) else MaterialTheme.colorScheme.primary)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(alert.shop, style = MaterialTheme.typography.titleSmall)
+                                }
                                 Text(alert.title, style = MaterialTheme.typography.bodyMedium)
                             }
                         }
@@ -2711,8 +2729,9 @@ private fun subscribeListing(context: android.content.Context, product: Product)
             "已訂閱競標：${product.title}"
         } else {
             val prodStore = ProductSubscriptionStore(context)
-            if (!isVip && prodStore.list().size >= 3) {
-                return "普通會員 (免費版) 最多僅限訂閱 3 個商品！請升級 VIP 會員或減少追蹤項目。"
+            val maxAllowed = accountStore.getProductLimit()
+            if (maxAllowed != -1 && prodStore.list().size >= maxAllowed) {
+                return "商品追蹤已達上限（最多 $maxAllowed 個商品）。管理員可為您的帳號調升數量或開啟無限制！"
             }
             if (product.platform == Market.FACEBOOK.label && FacebookCardReference.parse(product.url) != null) {
                 val actual = FacebookResolvedLinks.find(product.url)

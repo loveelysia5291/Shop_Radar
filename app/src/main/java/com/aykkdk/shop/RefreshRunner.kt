@@ -225,9 +225,26 @@ internal object SubscriptionRefreshNotifications {
             ?: record?.optString("title")?.ifBlank { null }
             ?: alerts.firstOrNull()?.shop?.ifBlank { null }
             ?: "賣場"
+        val hasDrop = alerts.any { it.kind == "降價" }
+        val hasRise = alerts.any { it.kind == "升值" }
         val hasNew = alerts.any { it.kind == "新品" }
-        val title = if (hasNew) "🔔【$shopName】有新商品上架！" else "🔔【$shopName】訂閱商品有更新"
-        val body = alerts.take(3).joinToString("\n") { "「${it.title}」" }
+        val title = when {
+            hasDrop -> "📉【$shopName】商品降價提醒！"
+            hasRise -> "📈【$shopName】商品價格調漲（升值）提醒！"
+            hasNew -> "🔔【$shopName】有新商品上架！"
+            else -> "🔔【$shopName】訂閱項目狀態異動"
+        }
+        val body = alerts.take(3).joinToString("\n") { alert ->
+            val tag = when (alert.kind) {
+                "降價" -> "【降價】"
+                "升值" -> "【升值】"
+                "新品" -> "【新品】"
+                "已售出／缺貨" -> "【售出】"
+                "已下架／失效" -> "【下架】"
+                else -> "【${alert.kind}】"
+            }
+            "$tag 「${alert.title}」"
+        }
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
