@@ -68,15 +68,6 @@ class AccountStore private constructor(private val context: Context) {
     }
     fun getDefaultRefreshInterval(): Int = if (isVip()) 60 else 90
 
-    fun getDeviceId(): String {
-        var id = prefs.getString("device_id", "")
-        if (id.isNullOrBlank()) {
-            id = UUID.randomUUID().toString()
-            prefs.edit().putString("device_id", id).apply()
-        }
-        return id
-    }
-
     fun getServerUrl(): String {
         val enc = prefs.getString("enc_server_url", null)
         if (!enc.isNullOrBlank()) {
