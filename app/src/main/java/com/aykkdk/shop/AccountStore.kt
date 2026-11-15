@@ -529,7 +529,9 @@ class AccountStore private constructor(private val context: Context) {
                     put("url", p.optString("url"))
                     put("title", p.optString("title"))
                     put("shop", p.optString("shop"))
+                    put("platform", p.optString("platform"))
                     put("price", p.optLong("price", 0L))
+                    put("status", p.optString("status", "unknown"))
                 })
             }
 
@@ -537,11 +539,25 @@ class AccountStore private constructor(private val context: Context) {
             val storesArray = JSONArray()
             val shopPrefs = appContext.getSharedPreferences("shop_subscriptions_v2", Context.MODE_PRIVATE)
             shopPrefs.all.keys.forEach { shopUrl ->
+                val raw = shopPrefs.getString(shopUrl, null)
+                val itemObj = if (raw != null) runCatching { JSONObject(raw) }.getOrNull() else null
+                val name = itemObj?.optString("name")?.ifBlank { null }
+                    ?: itemObj?.optString("title")?.ifBlank { null }
+                    ?: Market.fromPublicUrl(shopUrl)?.let { "${it.label}賣場" }
+                    ?: "訂閱賣場"
+                val platform = itemObj?.optString("platform")?.ifBlank { null }
+                    ?: Market.fromPublicUrl(shopUrl)?.name
+                    ?: "UNKNOWN"
+                val seenArr = itemObj?.optJSONArray("seen")
+                val lastSeen = if (seenArr != null && seenArr.length() > 0) seenArr.optString(0) else ""
+
                 storesArray.put(JSONObject().apply {
                     put("url", shopUrl)
-                    put("title", "訂閱賣場")
-                    put("shop", shopUrl)
+                    put("title", name)
+                    put("shop", name)
+                    put("platform", platform)
                     put("type", "store")
+                    put("last_seen", lastSeen)
                 })
             }
 

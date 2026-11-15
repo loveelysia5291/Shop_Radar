@@ -217,7 +217,46 @@ internal object RefreshRunner {
 
 internal object SubscriptionRefreshNotifications {
     fun show(context: Context, target: RefreshTarget, alerts: List<ProductSubscriptionAlert>, record: JSONObject? = null): Boolean {
-        // 強制移除 App 自己發送通知：背景推播統一由 Cloudflare Worker 經由 FCM 推送至手機
-        return false
+        if (alerts.isEmpty()) return false
+        RefreshNotificationAccess.createChannels(context)
+        if (!RefreshNotificationAccess.enabled(context, RefreshNotificationAccess.CHANNEL_SUBSCRIPTIONS)) return false
+
+        val shopName = record?.optString("name")?.ifBlank { null }
+            ?: record?.optString("title")?.ifBlank { null }
+            ?: alerts.firstOrNull()?.shop?.ifBlank { null }
+            ?: "賣場"
+        val hasNew = alerts.any { it.kind == "新品" }
+        val title = if (hasNew) "🔔【$shopName】有新商品上架！" else "🔔【$shopName】訂閱商品有更新"
+        val body = alerts.take(3).joinToString("\n") { "「${it.title}」" }
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(RadarFirebaseMessagingService.EXTRA_FCM_TAB, 1)
+            putExtra(RadarFirebaseMessagingService.EXTRA_FCM_URL, target.url)
+        }
+        val notificationId = (target.url.hashCode() and 0x7FFFFFFF)
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, RefreshNotificationAccess.CHANNEL_SUBSCRIPTIONS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+
+        return try {
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+            true
+        } catch (_: SecurityException) {
+            false
+        }
     }
 }
