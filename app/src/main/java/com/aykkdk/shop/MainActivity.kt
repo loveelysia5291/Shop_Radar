@@ -1981,9 +1981,15 @@ private fun AuctionScreen(modifier: Modifier, foreground: Boolean, refreshing: B
             Text(if (loggedIn) "貼上競拍網址即可追蹤價格與倒數。" else "尚未登入帳號。請至「關於」登入帳號以啟用競拍追蹤（未登入僅可搜尋商品）。")
         }
         items(entries, key = { it.getString("url") }) { entry ->
-            val checked = entry.optLong("checkedAt")
-            val end = entry.optLong("endsAt")
-            val estimatedServer = entry.optLong("serverAt", now) + (now - checked).coerceAtLeast(0)
+            val checked = entry.optLong("checkedAt", 0L)
+            val end = entry.optLong("endsAt", 0L)
+            val serverAt = entry.optLong("serverAt", 0L)
+            val estimatedServer = if (checked > 0L) {
+                val base = if (serverAt > 0L) serverAt else checked
+                base + (now - checked).coerceAtLeast(0L)
+            } else {
+                if (serverAt > 0L) serverAt else now
+            }
             val state = entry.optString("displayState", "unknown")
             val cancelled = state == "cancelled" || entry.optBoolean("cancelled")
             val ended = !cancelled && (state == "ended" || end > 0 && estimatedServer >= end)

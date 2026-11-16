@@ -190,6 +190,13 @@ class AuctionAlertPolicyTest {
         val itemEndingSoon = entry().put("endsAt", now + 3 * 60 * 1000L).put("checkedAt", now).put("serverAt", now)
         assertTrue(ForegroundAuctionPolicy.isEndingSoon(itemEndingSoon, now))
 
+        // Robustness: item without checkedAt or with checkedAt = 0 (e.g. freshly restored from cloud)
+        val itemNoCheckedAt = entry().put("endsAt", now + 3 * 60 * 1000L)
+        assertTrue(ForegroundAuctionPolicy.isEndingSoon(itemNoCheckedAt, now))
+
+        val itemZeroCheckedAt = entry().put("endsAt", now + 3 * 60 * 1000L).put("checkedAt", 0L).put("serverAt", 0L)
+        assertTrue(ForegroundAuctionPolicy.isEndingSoon(itemZeroCheckedAt, now))
+
         val itemEndingSixMin = entry().put("endsAt", now + 6 * 60 * 1000L).put("checkedAt", now).put("serverAt", now)
         assertFalse(ForegroundAuctionPolicy.isEndingSoon(itemEndingSixMin, now))
 

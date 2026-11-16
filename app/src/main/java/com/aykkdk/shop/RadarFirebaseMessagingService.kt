@@ -144,6 +144,14 @@ class RadarFirebaseMessagingService : FirebaseMessagingService() {
             NotificationManagerCompat.from(applicationContext).notify(notificationId, builder.build())
         } catch (_: SecurityException) {
         }
+
+        if (url.isNotBlank() && (type == "auction_outbid" || type == "auction")) {
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching {
+                    AuctionRefresher.refresh(applicationContext, setOf(url), notifySystem = false)
+                }
+            }
+        }
     }
 }
 

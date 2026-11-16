@@ -27,7 +27,13 @@ internal object ForegroundAuctionPolicy {
         if (!active(entry)) return false
         val end = entry.optLong("endsAt", 0L)
         val checked = entry.optLong("checkedAt", 0L)
-        val estimatedServer = entry.optLong("serverAt", now) + (now - checked).coerceAtLeast(0)
+        val serverAt = entry.optLong("serverAt", 0L)
+        val estimatedServer = if (checked > 0L) {
+            val base = if (serverAt > 0L) serverAt else checked
+            base + (now - checked).coerceAtLeast(0L)
+        } else {
+            if (serverAt > 0L) serverAt else now
+        }
         return end > 0 && (end - estimatedServer) in 1..(5 * 60 * 1000L)
     }
 }
@@ -48,7 +54,8 @@ internal object ForegroundAuctionPolling {
 
             if (read?.isActive != true && !schedules.sleep().contains(now) && RefreshNetwork.connected(context)) {
                 val urls = if (hasEndingSoon) {
-                    endingSoon.map { it.optString("url") }.toSet()
+                    val needInitial = allActive.filter { it.optLong("endsAt", 0L) <= 0L }.map { it.optString("url") }
+                    endingSoon.map { it.optString("url") }.toSet() + needInitial
                 } else {
                     allActive.map { it.optString("url") }.toSet()
                 }

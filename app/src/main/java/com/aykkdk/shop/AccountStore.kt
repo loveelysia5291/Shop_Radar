@@ -259,6 +259,7 @@ class AccountStore private constructor(private val context: Context) {
                                 if (a.has("price")) entry.put("price", a.optLong("price", 0L))
                                 if (a.has("bidCount")) entry.put("bidCount", a.optInt("bidCount", 0))
                                 if (a.has("serverAt")) entry.put("serverAt", a.optLong("serverAt", 0L))
+                                if (a.has("checkedAt")) entry.put("checkedAt", a.optLong("checkedAt", 0L))
                             }
                         }
                     }
@@ -619,6 +620,7 @@ class AccountStore private constructor(private val context: Context) {
                     put("price", a.optLong("price", 0L))
                     put("bidCount", a.optInt("bidCount", 0))
                     put("serverAt", a.optLong("serverAt", 0L))
+                    put("checkedAt", a.optLong("checkedAt", 0L))
                     put("account", auctionStore.accountFor(a.optString("url")))
                     put("cancelled", a.optBoolean("cancelled", false))
                     put("displayState", a.optString("displayState", "unknown"))
