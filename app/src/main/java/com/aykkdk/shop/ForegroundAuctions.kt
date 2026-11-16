@@ -54,10 +54,10 @@ internal object ForegroundAuctionPolling {
             val endingSoon = allActive.filter { ForegroundAuctionPolicy.isEndingSoon(it, now) }
             val hasEndingSoon = endingSoon.isNotEmpty()
 
-            // 只在按下競標監測後每1分鐘自動刷新網頁，或處於結標前5分鐘快軌刷新
+            // 只在按下競標監測後每1分鐘自動刷新網頁（結標前5分鐘開啟監測時支援快軌刷新）
             // 其餘時間如果網頁自己更新，就將時間延後（lastWebUpdate 更新會延後計時）
             val isDueForMonitor = isMonitoring && (now - lastWebUpdate >= ForegroundAuctionPolicy.MONITOR_INTERVAL_MS)
-            val shouldRefresh = hasEndingSoon || isDueForMonitor
+            val shouldRefresh = isMonitoring && (hasEndingSoon || isDueForMonitor)
 
             if (shouldRefresh && read?.isActive != true && !schedules.sleep().contains(now) && RefreshNetwork.connected(context)) {
                 val urls = if (hasEndingSoon) {

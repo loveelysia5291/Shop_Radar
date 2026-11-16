@@ -43,7 +43,15 @@ class SearchSubscriptionStore(context: Context) {
         } catch (_: Exception) { emptyList() }
     }
 
-    fun add(keyword: String, platform: String, min: String = "", max: String = "", url: String = ""): Boolean {
+    fun add(
+        keyword: String,
+        platform: String,
+        min: String = "",
+        max: String = "",
+        url: String = "",
+        lastSeenId: String = "",
+        checkpoint: Long = 0L
+    ): Boolean {
         val cleanKeyword = keyword.trim()
         if (cleanKeyword.isBlank()) return false
         val current = list().toMutableList()
@@ -56,7 +64,9 @@ class SearchSubscriptionStore(context: Context) {
             platform = platform.ifBlank { "ALL" },
             min = min,
             max = max,
-            url = url
+            url = url,
+            lastSeenId = lastSeenId,
+            listingCheckpointAt = checkpoint
         )
         current.add(sub)
         save(current)

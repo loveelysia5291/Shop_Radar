@@ -230,4 +230,37 @@ class AuctionAlertPolicyTest {
         read(saved, snapshot(700, own, 30)); read(saved, snapshot(800, other, 40))
         assertTrue(AuctionAlertPolicy.needsSystemNotification(saved))
     }
+    @Test fun snipeBidAlertIncludesAmountAndAlertKind() {
+        val now = base + 10_000L
+        val item = entry().put("endsAt", now + 3 * 60 * 1000L).put("price", 400L).put("bidCount", 2)
+        val sniped = snapshot(500, other, 10).copy(endsAt = now + 3 * 60 * 1000L, serverAt = now, records = listOf(bid(other, 500, 10)))
+        assertTrue(read(item, sniped, own))
+        val notice = AuctionAlertPolicy.pending(item)!!
+        assertEquals("snipe", notice.alertKind)
+        assertTrue(notice.alertText.contains("NT$500"))
+        assertTrue(notice.alertText.contains("壓線標"))
+    }
+    @Test fun extendedAuctionAlertIncludesAmountAndAlertKind() {
+        val now = base + 10_000L
+        val item = entry().put("endsAt", now + 2 * 60 * 1000L).put("price", 400L).put("bidCount", 2)
+        val extended = snapshot(500, other, 10).copy(endsAt = now + 7 * 60 * 1000L, serverAt = now, records = listOf(bid(other, 500, 10)))
+        assertTrue(read(item, extended, own))
+        val notice = AuctionAlertPolicy.pending(item)!!
+        assertEquals("extension", notice.alertKind)
+        assertTrue(notice.alertText.contains("NT$500"))
+        assertTrue(notice.alertText.contains("延後截標"))
+    }
+    @Test fun snipeBidWhileUserWasLeadingIncludesAmountAndSnipeAlertKind() {
+        val now = base + 10_000L
+        val item = entry().put("endsAt", now + 3 * 60 * 1000L)
+        // User was leading at 400
+        read(item, snapshot(400, own, 10).copy(endsAt = now + 3 * 60 * 1000L, serverAt = now, records = listOf(bid(own, 400, 10))), own)
+        // Opponent snipes at 600 within 5 minutes of end
+        val sniped = snapshot(600, other, 20).copy(endsAt = now + 3 * 60 * 1000L, serverAt = now + 1000L, records = listOf(bid(own, 400, 10), bid(other, 600, 20)))
+        assertTrue(read(item, sniped, own))
+        val notice = AuctionAlertPolicy.pending(item)!!
+        assertEquals("snipe", notice.alertKind)
+        assertTrue(notice.alertText.contains("NT$600"))
+        assertTrue(notice.alertText.contains("壓線標"))
+    }
 }

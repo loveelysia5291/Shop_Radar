@@ -949,6 +949,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         // History is intentionally retained across app launches and checks.
         ShopNewItems.merge(shop, newItems)
         shopsPrefs.edit().putString(subscriptionKey, shop.toString()).apply(); shopsVersion++
+        AccountStore.get(context).triggerCloudSync(context)
         when {
             old == null -> warning = "已建立目前可見商品的比對基準，下次檢查才會標示新品。"
             newItems.isEmpty() -> warning = "沒有新商品。"
@@ -1669,7 +1670,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                                 }
                                 val kw = query.trim()
                                 val sStore = SearchSubscriptionStore(context)
-                                val added = sStore.add(kw, selected, min, max)
+                                val newestTime = if (query.equals(appliedQuery, ignoreCase = true)) ShopCheckpoint.newest(products) else 0L
+                                val newestUrl = if (query.equals(appliedQuery, ignoreCase = true)) products.firstOrNull()?.url.orEmpty() else ""
+                                val added = sStore.add(kw, selected, min, max, url = "", lastSeenId = newestUrl, checkpoint = newestTime)
                                 if (added) {
                                     warning = "🔔 已成功訂閱關鍵字搜尋「$kw」！伺服器有新商品上架將發送推播。"
                                     AccountStore.get(context).triggerCloudSync(context)
@@ -1749,7 +1752,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     warning = "請先登入專屬帳號以使用搜尋訂閱功能。"
                 } else {
                     val sStore = SearchSubscriptionStore(context)
-                    val added = sStore.add(appliedQuery, selected, appliedMin, appliedMax)
+                    val newestTime = ShopCheckpoint.newest(products)
+                    val newestUrl = products.firstOrNull()?.url.orEmpty()
+                    val added = sStore.add(appliedQuery, selected, appliedMin, appliedMax, url = "", lastSeenId = newestUrl, checkpoint = newestTime)
                     if (added) {
                         warning = "🔔 已成功訂閱關鍵字搜尋「${appliedQuery}」！伺服器有新商品上架將發送推播。"
                         AccountStore.get(context).triggerCloudSync(context)

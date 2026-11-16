@@ -53,6 +53,7 @@ internal object RefreshRunner {
             recordError(context, target, run, result, allowed)
             if (result.error == null) {
                 AccountStore.get(context).notifyAppRefreshed(context)
+                AccountStore.get(context).triggerCloudSync(context)
             }
         }
         result

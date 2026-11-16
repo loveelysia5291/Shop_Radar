@@ -2,9 +2,9 @@ name = "shop-radar-worker"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# 定時排程自動巡查 (閃電刷新與 VIP 會員 10 分鐘，普通會員 90 分鐘)
+# 定時排程自動巡查（每 1 分鐘定時排程自動巡查）
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["* * * * *"]
 
 # 綁定 KV 命名空間 (請在 Cloudflare 控制台建立後填入真實 ID)
 # [[kv_namespaces]]

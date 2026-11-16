@@ -122,15 +122,15 @@ internal object AuctionAlertPolicy {
             leadKey = ownLead.key()
             entry.put("leadKey", leadKey).put("leadPrice", ownLead.price).put("leadAt", ownLead.at)
         }
+        val previousEndsAt = entry.optLong("endsAt", 0L)
+        val previousPrice = entry.optLong("price", 0L)
+        val previousBidCount = entry.optInt("bidCount", 0)
+
+        val isExtended = previousEndsAt > 0L && snapshot.endsAt > previousEndsAt
+        val isNearEnd = previousEndsAt > 0L && (previousEndsAt - snapshot.serverAt) in 0..(5 * 60 * 1000L)
+        val isSnipeBid = isNearEnd && (snapshot.price > previousPrice || snapshot.bidCount > previousBidCount)
+
         if (leadKey.isBlank() || leadKey == entry.optString("notifiedLeadKey") || snapshot.price <= entry.optLong("leadPrice")) {
-            val previousEndsAt = entry.optLong("endsAt", 0L)
-            val previousPrice = entry.optLong("price", 0L)
-            val previousBidCount = entry.optInt("bidCount", 0)
-
-            val isExtended = previousEndsAt > 0L && snapshot.endsAt > previousEndsAt
-            val isNearEnd = previousEndsAt > 0L && (previousEndsAt - snapshot.serverAt) in 0..(5 * 60 * 1000L)
-            val isSnipeBid = isNearEnd && (snapshot.price > previousPrice || snapshot.bidCount > previousBidCount)
-
             if (isExtended && snapshot.endsAt != entry.optLong("lastNotifiedEndsAt", 0L) && entry.optBoolean("alertsEnabled", true)) {
                 entry.put("lastNotifiedEndsAt", snapshot.endsAt)
                 entry.put("alert", "⚠️【延後截標 · 有人壓線標】最新出價金額 NT$${snapshot.price} (共 ${snapshot.bidCount} 次出價)")
@@ -149,9 +149,20 @@ internal object AuctionAlertPolicy {
         }
         entry.put("notifiedLeadKey", leadKey).put("outbidOtherPrice", snapshot.price)
         if (!entry.optBoolean("alertsEnabled", true)) return false
-        entry.put("alert", "你的出價已被超過，請開啟商品確認。")
+
+        val alertText = when {
+            isExtended -> "⚠️【延後截標 · 有人壓線標】你的出價已被超過！最新出價金額 NT$${snapshot.price} (共 ${snapshot.bidCount} 次出價)"
+            isSnipeBid -> "⚠️【有人壓線標提醒】你的出價已被超過！最新出價金額 NT$${snapshot.price} (共 ${snapshot.bidCount} 次出價)"
+            else -> "你的出價已被超過！最新出價金額 NT$${snapshot.price}，請開啟商品確認。"
+        }
+        val alertKind = when {
+            isExtended -> "extension"
+            isSnipeBid -> "snipe"
+            else -> "outbid"
+        }
+        entry.put("alert", alertText)
             .put("alertToken", UUID.randomUUID().toString()).put("alertAt", checkedAt).put("alertPrice", snapshot.price)
-            .put("alertKind", "outbid")
+            .put("alertKind", alertKind)
         return true
     }
 

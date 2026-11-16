@@ -629,7 +629,9 @@ class AccountStore private constructor(private val context: Context) {
                     ?: seenList.firstOrNull()
                     ?: ""
 
-                val checkpointAt = itemObj?.optLong("listingCheckpointAt", itemObj.optLong("rutenCheckpointAt", 0L)) ?: 0L
+                val rawCheckpoint = itemObj?.optLong("listingCheckpointAt", itemObj.optLong("rutenCheckpointAt", 0L)) ?: 0L
+                val newestItemsTime = ShopCheckpoint.newest(newItems)
+                val checkpointAt = maxOf(rawCheckpoint, newestItemsTime)
                 storesArray.put(JSONObject().apply {
                     put("url", shopUrl)
                     put("title", name)
