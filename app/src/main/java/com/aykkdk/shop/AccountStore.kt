@@ -239,6 +239,9 @@ class AccountStore private constructor(private val context: Context) {
                         item.put("url", sUrl)
                             .put("name", s.optString("name", s.optString("title", "訂閱賣場")))
                             .put("platform", s.optString("platform", Market.fromSubscription("", sUrl)?.name ?: "SHOPEE"))
+                        if (s.has("lightningRefresh")) {
+                            item.put("lightningRefresh", s.optBoolean("lightningRefresh", false))
+                        }
                         shopPrefs.edit().putString(sUrl, item.toString()).apply()
                     }
                 }
@@ -576,8 +579,14 @@ class AccountStore private constructor(private val context: Context) {
                 val platform = itemObj?.optString("platform")?.ifBlank { null }
                     ?: Market.fromPublicUrl(shopUrl)?.name
                     ?: "UNKNOWN"
+                val newItems = itemObj?.let(ShopNewItems::read).orEmpty()
+                val latestUrls = itemObj?.let(ShopNewItems::latestUrls).orEmpty()
                 val seenArr = itemObj?.optJSONArray("seen")
-                val lastSeen = if (seenArr != null && seenArr.length() > 0) seenArr.optString(0) else ""
+                val seenList = if (seenArr != null) (0 until seenArr.length()).map { seenArr.optString(it) } else emptyList()
+                val lastSeen = latestUrls.firstOrNull()
+                    ?: newItems.firstOrNull()?.url
+                    ?: seenList.firstOrNull()
+                    ?: ""
 
                 storesArray.put(JSONObject().apply {
                     put("url", shopUrl)
@@ -586,6 +595,7 @@ class AccountStore private constructor(private val context: Context) {
                     put("platform", platform)
                     put("type", "store")
                     put("last_seen", lastSeen)
+                    put("lightningRefresh", itemObj?.optBoolean("lightningRefresh", false) ?: false)
                 })
             }
 

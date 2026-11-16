@@ -36,7 +36,7 @@ internal data class ShopRefreshUpdate(val record: JSONObject, val alerts: List<P
             ShopNewItems.merge(latest, newItems)
             if (complete) {
                 val checked = if (initialize) found else collected
-                latest.put("seen", JSONArray((seen + checked.map { it.url }).toList()))
+                latest.put("seen", JSONArray((checked.map { it.url } + seen).distinct().take(100)))
                     .put("listingCheckpointAt", maxOf(checkpoint, ShopCheckpoint.newest(checked)))
                     .put("checkedAt", now)
                 latest.remove("refreshScan"); latest.remove("lastRefreshError")

@@ -1,6 +1,7 @@
 package com.aykkdk.shop
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
@@ -673,21 +674,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             val alerts = mutableListOf<ProductSubscriptionAlert>()
             val errors = mutableListOf<String>()
             try {
-                var lastItemFinishedAt = 0L
-                targets.forEachIndexed { index, target ->
+                targets.forEach { target ->
                     if (!subscriptionRefreshing) return@launch
-                    val now = System.currentTimeMillis()
-                    // 刷新一個物品回傳後等 5~10 秒再繼續下一個刷新，避免被購物網站封禁
-                    // 若時間不重疊（距離上次刷新完成已超過該隨機間隔）則直接執行，僅對時間重疊才等待調整
-                    if (index > 0 && lastItemFinishedAt > 0L) {
-                        val minInterval = (5000L..10000L).random()
-                        val elapsed = now - lastItemFinishedAt
-                        if (elapsed < minInterval) {
-                            delay(minInterval - elapsed)
-                        }
-                    }
                     val result = RefreshRunner.refresh(context, target) { subscriptionRefreshId == requestId }
-                    lastItemFinishedAt = System.currentTimeMillis()
                     alerts.addAll(result.alerts)
                     result.error?.let(errors::add)
                 }
@@ -717,19 +706,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             }
             val errors = mutableListOf<String>()
             try {
-                var lastAuctionFinishedAt = 0L
-                targets.forEachIndexed { index, target ->
+                targets.forEach { target ->
                     if (!auctionRefreshing) return@launch
-                    val now = System.currentTimeMillis()
-                    if (index > 0 && lastAuctionFinishedAt > 0L) {
-                        val minInterval = (5000L..10000L).random()
-                        val elapsed = now - lastAuctionFinishedAt
-                        if (elapsed < minInterval) {
-                            delay(minInterval - elapsed)
-                        }
-                    }
                     RefreshRunner.refresh(context, target).error?.let(errors::add)
-                    lastAuctionFinishedAt = System.currentTimeMillis()
                 }
                 SubscriptionCleanupPolicy.cleanExpired(context)
                 if (errors.isNotEmpty()) warning = "${errors.size} 筆競標刷新未完成。\n${errors.distinct().take(3).joinToString("\n")}"
@@ -1020,6 +999,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
     }
     fun closeNewItemsPage() {
         saveNewItemsProgress(complete = newItemsPaging?.reachedOld == true)
+        subscriptionHistoryShop?.let { markShopItemsViewed(context, it) }
         subscriptionShopToken++
         subscriptionShopCapture = null; subscriptionShopSearching = false
         nextNewItemsCapture = null; shopRead = null
@@ -1197,6 +1177,8 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             // 開 APP 自動刷新商品訂閱與競標
             refreshSubscriptions()
             refreshAuctions()
+        } else {
+            startupSubscriptionNotice?.forEach { markShopAlertsViewed(context, it) }
         }
     }
     LaunchedEffect(dispatch, searchToken) {
@@ -1299,6 +1281,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             subscriptionShopToken++; subscriptionShopCapture = null; subscriptionShopSearching = false
             pendingShopPreview = false; pendingShop = ""; shopRead = null
         }
+        subscriptionHistoryShop?.let { markShopItemsViewed(context, it) }
         showSubscriptionProducts = false; subscriptionHistoryShop = null
     }
     // Keep one screen-level callback registered even while captures or stale modal
@@ -1693,6 +1676,7 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                     subscriptionProducts = items; subscriptionNewItemUrls = latest
                     productPageTitle = ShopNewItems.pageTitle(shopSubscriptionRecord(shopUrl, shopsPrefs.getString(shopUrl, null)).optString("name"), items)
                     showSubscriptionProducts = true
+                    markShopItemsViewed(context, shopUrl)
                 }, onCheck = { url, market ->
                     startSubscriptionShopCapture(url, market, preview = false)
                 }, onSearchShop = { url, market ->
@@ -1884,7 +1868,10 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
         )
         startupSubscriptionNotice?.filter { AdultVisibility.unlocked || !(it.isAdult || AdultVisibility.adultText(it.title) || AdultVisibility.adultText(it.shop)) }?.takeIf { it.isNotEmpty() }?.let { alerts ->
             if (warning == null && captureDiagnostic == null) AlertDialog(
-                onDismissRequest = { startupSubscriptionNotice = null },
+                onDismissRequest = {
+                    alerts.forEach { markShopAlertsViewed(context, it) }
+                    startupSubscriptionNotice = null
+                },
                 title = {
                     Text(when {
                         alerts.any { it.kind == "降價" } -> "📉 商品降價通知"
@@ -1917,7 +1904,12 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                         }
                     }
                 },
-                confirmButton = { TextButton(onClick = { startupSubscriptionNotice = null }) { Text("查看完成") } }
+                confirmButton = {
+                    TextButton(onClick = {
+                        alerts.forEach { markShopAlertsViewed(context, it) }
+                        startupSubscriptionNotice = null
+                    }) { Text("查看完成") }
+                }
             )
         }
         if (showYahooConsent) AlertDialog(
@@ -2350,6 +2342,52 @@ private fun YahooFilterControls(state: String, sort: String,
     }
 }
 
+internal fun markShopItemsViewed(context: Context, shopUrl: String) {
+    val prefs = context.getSharedPreferences("shop_subscriptions_v2", Context.MODE_PRIVATE)
+    synchronized(SubscriptionMutations.lock) {
+        val raw = prefs.getString(shopUrl, null) ?: return
+        val record = JSONObject(raw)
+        val rows = BackgroundAlertJournal.rows(record)
+        if (rows.isNotEmpty()) {
+            BackgroundAlertJournal.clear(record, rows.map { it.optString("id") }.toSet())
+        }
+        val newItems = ShopNewItems.read(record)
+        val seenArr = record.optJSONArray("seen")
+        val oldSeen = if (seenArr != null) (0 until seenArr.length()).map { seenArr.optString(it) } else emptyList<String>()
+        val updatedSeen = (newItems.map { it.url } + oldSeen).distinct().take(100)
+        record.put("seen", JSONArray(updatedSeen))
+        record.remove("latestNewItemUrls")
+        prefs.edit().putString(shopUrl, record.toString()).commit()
+    }
+    AccountStore.get(context).triggerCloudSync(context)
+}
+
+internal fun markShopAlertsViewed(context: Context, alert: ProductSubscriptionAlert) {
+    if (alert.productUrl.isNotBlank()) {
+        val prodStore = ProductSubscriptionStore(context)
+        val raw = prodStore.prefs.getString(alert.productUrl, null)
+        if (raw != null) {
+            val record = JSONObject(raw)
+            val rows = BackgroundAlertJournal.rows(record)
+            if (rows.isNotEmpty()) {
+                BackgroundAlertJournal.clear(record, rows.map { it.optString("id") }.toSet())
+                prodStore.prefs.edit().putString(alert.productUrl, record.toString()).commit()
+            }
+        }
+    }
+    val prefs = context.getSharedPreferences("shop_subscriptions_v2", Context.MODE_PRIVATE)
+    val allKeys: Set<String> = prefs.all.keys
+    val matchKey = allKeys.firstOrNull { key ->
+        val raw = prefs.getString(key, null) ?: return@firstOrNull false
+        val record = JSONObject(raw)
+        val name = record.optString("name").ifBlank { record.optString("title") }
+        name == alert.shop || key == alert.productUrl || (alert.shop.isNotBlank() && key.contains(alert.shop))
+    } ?: return
+    markShopItemsViewed(context, matchKey)
+}
+
+data class LightningTargetInfo(val url: String, val title: String, val count: Int, val isStore: Boolean)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Boolean, onWarning: (String) -> Unit,
@@ -2380,7 +2418,7 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
     var pendingShopRemoval by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingProductRemoval by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showLightningLimitReachedDialog by remember { mutableStateOf<Int?>(null) }
-    var pendingLightningTarget by remember { mutableStateOf<Triple<String, String, Int>?>(null) }
+    var pendingLightningTarget by remember { mutableStateOf<LightningTargetInfo?>(null) }
     var notificationGranted by remember { mutableStateOf(Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         notificationGranted = granted
@@ -2475,13 +2513,43 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
             val shopImage = ProductThumbnail.url(shop.optString("image")).orEmpty()
             val platform = subscriptionPlatform(shop.optString("platform"), shopUrl)
             val name = ShopText.shop(shop.optString("name")).ifBlank { "尚未取得店名" }
+            val isLightning = shop.optBoolean("lightningRefresh", false)
             GlassCard(Modifier.fillMaxWidth()) {
             Column {
-                SubscriptionCardCover(target, reading, "檢查新品", "取消店家訂閱",
+                SubscriptionCardCover(
+                    target = target,
+                    reading = reading,
+                    refreshLabel = "檢查新品",
+                    removeLabel = "取消店家訂閱",
                     onRefresh = {
                         val market = Market.fromSubscription(shop.optString("platform"), shopUrl)
                         if (market != null) onCheck(shopUrl, market) else onWarning("無法辨識店家平台，請重新新增此訂閱。")
-                    }, onRemove = { pendingShopRemoval = shopUrl to name }
+                    },
+                    onRemove = { pendingShopRemoval = shopUrl to name },
+                    isLightning = isLightning,
+                    onToggleLightning = {
+                        if (isLightning) {
+                            synchronized(SubscriptionMutations.lock) {
+                                val raw = prefs.getString(shopUrl, null)
+                                if (raw != null) {
+                                    val item = JSONObject(raw)
+                                    item.put("lightningRefresh", false)
+                                    prefs.edit().putString(shopUrl, item.toString()).commit()
+                                }
+                            }
+                            localVersion++
+                            AccountStore.get(context).triggerCloudSync(context)
+                        } else {
+                            val activeCount = productSubscriptions.count { it.optBoolean("lightningRefresh", false) } +
+                                shops.count { it.optBoolean("lightningRefresh", false) }
+                            val limit = AccountStore.get(context).getProductLimit()
+                            if (limit != -1 && activeCount >= limit) {
+                                showLightningLimitReachedDialog = activeCount
+                            } else {
+                                pendingLightningTarget = LightningTargetInfo(shopUrl, name, activeCount, isStore = true)
+                            }
+                        }
+                    }
                 ) { cover -> ProductCover(shopImage, "店家商品縮圖", cover) }
                 val error = shop.optString("lastRefreshError")
                 SubscriptionCardBody(
@@ -2534,12 +2602,13 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                                     localVersion++
                                     AccountStore.get(context).triggerCloudSync(context)
                                 } else {
-                                    val activeCount = productSubscriptions.count { it.optBoolean("lightningRefresh", false) }
+                                    val activeCount = productSubscriptions.count { it.optBoolean("lightningRefresh", false) } +
+                                        shops.count { it.optBoolean("lightningRefresh", false) }
                                     val limit = AccountStore.get(context).getProductLimit()
                                     if (limit != -1 && activeCount >= limit) {
                                         showLightningLimitReachedDialog = activeCount
                                     } else {
-                                        pendingLightningTarget = Triple(productUrl, title, activeCount)
+                                        pendingLightningTarget = LightningTargetInfo(productUrl, title, activeCount, isStore = false)
                                     }
                                 }
                             }
@@ -2604,7 +2673,7 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
         AlertDialog(
             onDismissRequest = { showLightningLimitReachedDialog = null },
             title = { Text("已達到上限") },
-            text = { Text("你目前已經達到上限\n目前已經開啟 $count 個閃電刷新商品。") },
+            text = { Text("你目前已經達到上限\n目前已經開啟 $count 個閃電刷新。") },
             confirmButton = {
                 TextButton(onClick = { showLightningLimitReachedDialog = null }) {
                     Text("確定")
@@ -2612,14 +2681,25 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
             }
         )
     }
-    pendingLightningTarget?.let { (productUrl, title, count) ->
+    pendingLightningTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { pendingLightningTarget = null },
             title = { Text("開啟閃電刷新？") },
-            text = { Text("要開始閃電刷新嗎？\n目前已經開啟 $count 個") },
+            text = { Text("要開始閃電刷新嗎？\n目前已經開啟 ${target.count} 個") },
             confirmButton = {
                 TextButton(onClick = {
-                    productStore.update(productUrl) { it.put("lightningRefresh", true) }
+                    if (target.isStore) {
+                        synchronized(SubscriptionMutations.lock) {
+                            val raw = prefs.getString(target.url, null)
+                            if (raw != null) {
+                                val item = JSONObject(raw)
+                                item.put("lightningRefresh", true)
+                                prefs.edit().putString(target.url, item.toString()).commit()
+                            }
+                        }
+                    } else {
+                        productStore.update(target.url) { it.put("lightningRefresh", true) }
+                    }
                     localVersion++
                     AccountStore.get(context).triggerCloudSync(context)
                     pendingLightningTarget = null
