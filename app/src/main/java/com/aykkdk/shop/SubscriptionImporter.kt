@@ -34,9 +34,6 @@ internal object SubscriptionImporter {
                 accountStore.triggerCloudSync(context)
                 return ImportedSubscription("已加入競拍追蹤，正在刷新競標資料。", RefreshKind.AUCTION)
             }
-            if (!isVip && store.list().size >= 3) {
-                throw IllegalArgumentException("普通會員 (免費版) 最多僅限訂閱 3 個商品！請升級 VIP 會員或減少追蹤項目。")
-            }
             val result = store.addPublicUrl(clean, initial)
             require(result.accepted) { result.message }
             accountStore.triggerCloudSync(context)

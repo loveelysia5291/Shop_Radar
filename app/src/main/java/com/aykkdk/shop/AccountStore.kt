@@ -253,7 +253,13 @@ class AccountStore private constructor(private val context: Context) {
                     if (aUrl.isNotBlank() && auctionStore.list().none { it.optString("url") == aUrl }) {
                         runCatching {
                             auctionStore.add(aUrl)
-                            if (a.has("title")) auctionStore.update(aUrl) { it.put("title", a.optString("title")) }
+                            auctionStore.update(aUrl) { entry ->
+                                if (a.has("title")) entry.put("title", a.optString("title"))
+                                if (a.has("endsAt")) entry.put("endsAt", a.optLong("endsAt", 0L))
+                                if (a.has("price")) entry.put("price", a.optLong("price", 0L))
+                                if (a.has("bidCount")) entry.put("bidCount", a.optInt("bidCount", 0))
+                                if (a.has("serverAt")) entry.put("serverAt", a.optLong("serverAt", 0L))
+                            }
                         }
                     }
                 }
@@ -387,7 +393,7 @@ class AccountStore private constructor(private val context: Context) {
      * 忘記密碼：申請發送 6 碼驗證碼至信箱
      */
     suspend fun requestPasswordReset(
-        email: String,
+        accountOrEmail: String,
         serverUrl: String? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -401,7 +407,8 @@ class AccountStore private constructor(private val context: Context) {
             conn.readTimeout = 10000
 
             val payload = JSONObject().apply {
-                put("email", email.trim())
+                put("email", accountOrEmail.trim())
+                put("username", accountOrEmail.trim())
             }.toString()
 
             conn.outputStream.use { it.write(payload.toByteArray()) }
@@ -411,7 +418,7 @@ class AccountStore private constructor(private val context: Context) {
 
             val json = JSONObject(text.ifBlank { "{}" })
             if (json.optBoolean("success", false)) {
-                json.optString("message", "驗證碼已發送至您的電子信箱，請查收並輸入！")
+                json.optString("message", "驗證碼已生成並送出，請查收！")
             } else {
                 throw Exception(json.optString("message", "申請重設密碼失敗 ($status)"))
             }
@@ -422,7 +429,7 @@ class AccountStore private constructor(private val context: Context) {
      * 忘記密碼：向管理員求助（用於電子郵件無法寄送時，管理員可在後台直接修改密碼）
      */
     suspend fun requestAdminPasswordReset(
-        email: String,
+        accountOrEmail: String,
         serverUrl: String? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -436,7 +443,8 @@ class AccountStore private constructor(private val context: Context) {
             conn.readTimeout = 10000
 
             val payload = JSONObject().apply {
-                put("email", email.trim())
+                put("email", accountOrEmail.trim())
+                put("username", accountOrEmail.trim())
             }.toString()
 
             conn.outputStream.use { it.write(payload.toByteArray()) }
@@ -446,7 +454,7 @@ class AccountStore private constructor(private val context: Context) {
 
             val json = JSONObject(text.ifBlank { "{}" })
             if (json.optBoolean("success", false)) {
-                json.optString("message", "已向管理員送出求助！管理員在收到求助後會為您重設密碼。")
+                json.optString("message", "已向管理員送出求助！管理員在後台確認後將為您重設新密碼。")
             } else {
                 throw Exception(json.optString("message", "向管理員求助失敗 ($status)"))
             }
@@ -457,7 +465,7 @@ class AccountStore private constructor(private val context: Context) {
      * 忘記密碼：驗證 6 碼驗證碼並設定全新密碼
      */
     suspend fun resetPassword(
-        email: String,
+        accountOrEmail: String,
         code: String,
         newPassword: String,
         serverUrl: String? = null
@@ -473,7 +481,8 @@ class AccountStore private constructor(private val context: Context) {
             conn.readTimeout = 10000
 
             val payload = JSONObject().apply {
-                put("email", email.trim())
+                put("email", accountOrEmail.trim())
+                put("username", accountOrEmail.trim())
                 put("code", code.trim())
                 put("newPassword", newPassword.trim())
             }.toString()
@@ -606,6 +615,13 @@ class AccountStore private constructor(private val context: Context) {
                 auctionsArray.put(JSONObject().apply {
                     put("url", a.optString("url"))
                     put("title", a.optString("title"))
+                    put("endsAt", a.optLong("endsAt", 0L))
+                    put("price", a.optLong("price", 0L))
+                    put("bidCount", a.optInt("bidCount", 0))
+                    put("serverAt", a.optLong("serverAt", 0L))
+                    put("account", auctionStore.accountFor(a.optString("url")))
+                    put("cancelled", a.optBoolean("cancelled", false))
+                    put("displayState", a.optString("displayState", "unknown"))
                 })
             }
 

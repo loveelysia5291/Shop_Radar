@@ -738,7 +738,7 @@ private fun ForgotPasswordDialog(
                 when (step) {
                     ForgotStep.REQUEST_CODE -> {
                         Text(
-                            "請輸入註冊的電子信箱以寄送 6 位數驗證碼；若電子信箱無法收到郵件，亦可直接點選「向管理員求助」。",
+                            "因伺服器無專屬郵件伺服器寄送信件，若忘記密碼，建議直接點選「🆘 向管理員求助」，管理員可在後台直接為您修改密碼或提供 6 碼驗證碼。",
                             fontSize = 13.sp,
                             lineHeight = 18.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -748,13 +748,12 @@ private fun ForgotPasswordDialog(
                         OutlinedTextField(
                             value = email,
                             onValueChange = { email = it },
-                            label = { Text("註冊電子信箱 (Email)") },
-                            placeholder = { Text("example@gmail.com") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                            label = { Text("註冊帳號或電子信箱") },
+                            placeholder = { Text("請輸入帳號或 Email") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
-                            leadingIcon = { Icon(Icons.Default.Email, null) }
+                            leadingIcon = { Icon(Icons.Default.Person, null) }
                         )
 
                         errorMessage?.let { err ->
@@ -771,8 +770,8 @@ private fun ForgotPasswordDialog(
                         ) {
                             TextButton(
                                 onClick = {
-                                    if (email.isBlank() || !email.contains("@")) {
-                                        errorMessage = "請先填寫註冊電子信箱再向管理員求助"
+                                    if (email.isBlank()) {
+                                        errorMessage = "請先填寫註冊帳號或電子信箱再向管理員求助"
                                         return@TextButton
                                     }
                                     scope.launch {
@@ -791,7 +790,7 @@ private fun ForgotPasswordDialog(
                                 },
                                 enabled = !loading
                             ) {
-                                Text("🆘 向管理員求助", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                                Text("🆘 向管理員求助", color = MaterialTheme.colorScheme.error, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             }
 
                             Row {
@@ -799,8 +798,8 @@ private fun ForgotPasswordDialog(
                                 Spacer(Modifier.width(8.dp))
                                 Button(
                                     onClick = {
-                                        if (email.isBlank() || !email.contains("@")) {
-                                            errorMessage = "請填寫正確格式的註冊電子信箱"
+                                        if (email.isBlank()) {
+                                            errorMessage = "請填寫註冊帳號或電子信箱"
                                             return@Button
                                         }
                                         scope.launch {
@@ -813,7 +812,7 @@ private fun ForgotPasswordDialog(
                                                     step = ForgotStep.VERIFY_AND_RESET
                                                 }.onFailure {
                                                     loading = false
-                                                    errorMessage = it.message ?: "寄送驗證碼失敗"
+                                                    errorMessage = it.message ?: "申請驗證碼失敗"
                                                 }
                                         }
                                     },
@@ -825,7 +824,7 @@ private fun ForgotPasswordDialog(
                                         Spacer(Modifier.width(6.dp))
                                         Text("處理中...")
                                     } else {
-                                        Text("📧 寄送驗證碼")
+                                        Text("申請 6 碼驗證碼")
                                     }
                                 }
                             }
@@ -834,8 +833,8 @@ private fun ForgotPasswordDialog(
                         Spacer(Modifier.height(8.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(onClick = {
-                                if (email.isBlank() || !email.contains("@")) {
-                                    errorMessage = "請先填寫註冊電子信箱"
+                                if (email.isBlank()) {
+                                    errorMessage = "請先填寫註冊帳號或電子信箱"
                                 } else {
                                     errorMessage = null
                                     step = ForgotStep.VERIFY_AND_RESET
@@ -1002,7 +1001,7 @@ private fun ForgotPasswordDialog(
                                 }
                                 Spacer(Modifier.height(10.dp))
                                 Text(
-                                    "已成功為信箱 ($email) 向管理員登記重設密碼求助。\n\n管理員在收到求助後會直接為您重設密碼。請聯繫管理員為您設定新密碼後直接登入！",
+                                    "已成功為帳號/信箱 ($email) 向管理員登記重設密碼求助。\n\n• 若管理員已在後台為您修改新密碼：請直接點選「關閉」並以此新密碼登入。\n• 若管理員提供給您 6 位數安全重設碼：請點選「輸入驗證碼設定新密碼」。",
                                     fontSize = 13.sp,
                                     lineHeight = 19.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1014,10 +1013,17 @@ private fun ForgotPasswordDialog(
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            TextButton(onClick = {
+                                errorMessage = null
+                                step = ForgotStep.VERIFY_AND_RESET
+                            }) {
+                                Text("輸入驗證碼設定新密碼", fontSize = 13.sp)
+                            }
                             Button(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) {
-                                Text("我知道了")
+                                Text("關閉")
                             }
                         }
                     }

@@ -16,9 +16,20 @@ import java.util.Locale
 
 internal object ForegroundAuctionPolicy {
     const val INTERVAL_MS = 20_000L
+    const val RAPID_INTERVAL_MS = 3_000L
+
     fun active(entry: JSONObject): Boolean = !entry.optBoolean("cancelled") &&
         entry.optString("displayState") !in setOf("ended", "cancelled") &&
         entry.optString("url").isNotBlank()
+
+    /** 判斷競拍是否處於結標前 5 分鐘高頻即時刷新窗口內 */
+    fun isEndingSoon(entry: JSONObject, now: Long = System.currentTimeMillis()): Boolean {
+        if (!active(entry)) return false
+        val end = entry.optLong("endsAt", 0L)
+        val checked = entry.optLong("checkedAt", 0L)
+        val estimatedServer = entry.optLong("serverAt", now) + (now - checked).coerceAtLeast(0)
+        return end > 0 && (end - estimatedServer) in 1..(5 * 60 * 1000L)
+    }
 }
 
 /** Owned by the Activity's foreground lifecycle, not the selected pager tab or WorkManager. */
@@ -30,17 +41,25 @@ internal object ForegroundAuctionPolling {
         // Let the first UI frame draw. Other subscriptions still require manual/opt-in checks.
         delay(500)
         while (isActive) {
-            if (read?.isActive != true && !schedules.sleep().contains(System.currentTimeMillis()) && RefreshNetwork.connected(context)) {
-                val urls = store.list().filter { ForegroundAuctionPolicy.active(it) && AdultVisibility.visible(it) }
-                    .map { it.optString("url") }.toSet()
+            val now = System.currentTimeMillis()
+            val allActive = store.list().filter { ForegroundAuctionPolicy.active(it) && AdultVisibility.visible(it) }
+            val endingSoon = allActive.filter { ForegroundAuctionPolicy.isEndingSoon(it, now) }
+            val hasEndingSoon = endingSoon.isNotEmpty()
+
+            if (read?.isActive != true && !schedules.sleep().contains(now) && RefreshNetwork.connected(context)) {
+                val urls = if (hasEndingSoon) {
+                    endingSoon.map { it.optString("url") }.toSet()
+                } else {
+                    allActive.map { it.optString("url") }.toSet()
+                }
                 if (urls.isNotEmpty()) read = launch {
                     AuctionRefresher.refresh(context, urls, notifySystem = false) {
                         !schedules.sleep().contains(System.currentTimeMillis())
                     }
                 }
             }
-            // No overlapping runs, queued catch-up jobs, foreground service or background 20s wakeups.
-            delay(ForegroundAuctionPolicy.INTERVAL_MS)
+            val nextDelay = if (hasEndingSoon) ForegroundAuctionPolicy.RAPID_INTERVAL_MS else ForegroundAuctionPolicy.INTERVAL_MS
+            delay(nextDelay)
         }
     }
 }

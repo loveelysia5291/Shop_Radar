@@ -1988,6 +1988,7 @@ private fun AuctionScreen(modifier: Modifier, foreground: Boolean, refreshing: B
             val cancelled = state == "cancelled" || entry.optBoolean("cancelled")
             val ended = !cancelled && (state == "ended" || end > 0 && estimatedServer >= end)
             val confirmedEnded = state == "ended" || end > 0 && entry.optLong("serverAt") >= end
+            val isEndingSoon = !cancelled && !ended && end > 0 && (end - estimatedServer) in 1..(5 * 60 * 1000L)
             val bidderIds = entry.optJSONArray("bidderIds")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
             }.orEmpty()
@@ -2009,12 +2010,28 @@ private fun AuctionScreen(modifier: Modifier, foreground: Boolean, refreshing: B
                     Text(entry.optString("title"), minLines = 3, maxLines = 3, overflow = TextOverflow.Ellipsis)
                     Text(Market.fromPublicProductUrl(entry.optString("url"))?.label.orEmpty(), style = MaterialTheme.typography.labelSmall)
                     if (entry.has("price")) Text("目前 NT$${entry.optLong("price")} · ${entry.optInt("bidCount")} 次出價")
+                    if (isEndingSoon) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.errorContainer
+                        ) {
+                            Text(
+                                "⚡ 結標前 5 分鐘 · 即時高頻刷新中",
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                     Text(when {
                         end == 0L -> "等待取得結標時間"
                         cancelled -> "競拍已取消"
                         ended -> "已結標"
+                        isEndingSoon -> "剩餘 ${countdown(end - estimatedServer)} (即時更新)"
                         else -> "剩餘 ${countdown(end - estimatedServer)}"
-                    })
+                    }, color = if (isEndingSoon) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                       fontWeight = if (isEndingSoon) FontWeight.Bold else FontWeight.Normal)
                     if (end > 0) Text("結標：${dateText(end)}", style = MaterialTheme.typography.bodySmall)
                     if (ended) Text(AuctionResultText.winner(bidderIds, entry.optInt("bidCount"), store.accountFor(entry.optString("url")), confirmedEnded),
                         color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)

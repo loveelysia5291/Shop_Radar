@@ -185,6 +185,20 @@ class AuctionAlertPolicyTest {
         assertFalse(ForegroundAuctionPolicy.active(entry().put("cancelled", true)))
         assertFalse(ForegroundAuctionPolicy.active(JSONObject()))
     }
+    @Test fun foregroundPolicyIdentifiesAuctionsEndingWithinFiveMinutes() {
+        val now = 1_000_000L
+        val itemEndingSoon = entry().put("endsAt", now + 3 * 60 * 1000L).put("checkedAt", now).put("serverAt", now)
+        assertTrue(ForegroundAuctionPolicy.isEndingSoon(itemEndingSoon, now))
+
+        val itemEndingSixMin = entry().put("endsAt", now + 6 * 60 * 1000L).put("checkedAt", now).put("serverAt", now)
+        assertFalse(ForegroundAuctionPolicy.isEndingSoon(itemEndingSixMin, now))
+
+        val itemAlreadyEnded = entry().put("endsAt", now - 1000L).put("checkedAt", now).put("serverAt", now)
+        assertFalse(ForegroundAuctionPolicy.isEndingSoon(itemAlreadyEnded, now))
+
+        val itemCancelled = itemEndingSoon.put("cancelled", true)
+        assertFalse(ForegroundAuctionPolicy.isEndingSoon(itemCancelled, now))
+    }
     @Test fun foregroundObservedLossIsStillPendingForBackgroundSystemDeliveryOnce() {
         val saved = entry()
         read(saved, snapshot(400, own, 10))
