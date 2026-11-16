@@ -2590,6 +2590,8 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
         }
     }
     val productSubscriptions = remember(localVersion) { productStore.list() }.filter { AdultVisibility.visible(it) }
+    val searchStore = remember { SearchSubscriptionStore(context) }
+    val searchSubs = remember(localVersion) { searchStore.list() }
     val refreshNow = rememberRefreshClock()
     AdaptiveCardGrid(modifier, contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp), fixedColumns = 2) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -2755,8 +2757,6 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                         }
                     } }
         }
-        val searchStore = remember { SearchSubscriptionStore(context) }
-        val searchSubs = remember(localVersion) { searchStore.list() }
         item(span = { GridItemSpan(maxLineSpan) }) {
             SubscriptionSection("關鍵字搜尋訂閱", "未訂閱任何搜尋關鍵字。可在「搜尋商品」輸入關鍵字（如：手機零件機）後點擊「訂閱關鍵字」以追蹤新商品。".takeIf { searchSubs.isEmpty() })
         }
