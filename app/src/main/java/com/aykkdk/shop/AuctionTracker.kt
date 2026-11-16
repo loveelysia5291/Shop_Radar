@@ -90,6 +90,11 @@ class AuctionStore(private val context: Context) {
         save(items)
         true
     }
+    fun isMonitoring(): Boolean = prefs.getBoolean("monitoring_active", false)
+    fun setMonitoring(active: Boolean) = prefs.edit().putBoolean("monitoring_active", active).commit()
+    fun getLastWebUpdate(): Long = prefs.getLong("last_web_update", 0L)
+    fun recordWebUpdate(now: Long = System.currentTimeMillis()) = prefs.edit().putLong("last_web_update", now).commit()
+
     private fun save(items: List<JSONObject>) { prefs.edit().putString("items", JSONArray(items).toString()).commit() }
     companion object { private val lock = Any() }
 }
@@ -156,6 +161,7 @@ internal object AuctionRefresher {
                         if (recordsError.isBlank()) current.remove("bidRecords")
                         current.put("bidRecordsCount", snapshot.records.size).put("bidRecordsComplete", snapshot.recordsComplete)
                         if (token.isBlank()) cancelOutbidNotification(context, url)
+                        store.recordWebUpdate(checkedAt)
                     }
                 }
                 // A foreground read may already have created this loss. Do not

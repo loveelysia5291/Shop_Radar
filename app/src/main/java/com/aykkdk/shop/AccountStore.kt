@@ -239,6 +239,10 @@ class AccountStore private constructor(private val context: Context) {
                         item.put("url", sUrl)
                             .put("name", s.optString("name", s.optString("title", "訂閱賣場")))
                             .put("platform", s.optString("platform", Market.fromSubscription("", sUrl)?.name ?: "SHOPEE"))
+                        if (s.has("listingCheckpointAt") || s.has("latest_item_time")) {
+                            val cp = s.optLong("listingCheckpointAt", s.optLong("latest_item_time", 0L))
+                            if (cp > 0L) item.put("listingCheckpointAt", cp)
+                        }
                         if (s.has("lightningRefresh")) {
                             item.put("lightningRefresh", s.optBoolean("lightningRefresh", false))
                         }
@@ -263,6 +267,33 @@ class AccountStore private constructor(private val context: Context) {
                             }
                         }
                     }
+                }
+
+                val searches = vault.optJSONArray("searches") ?: JSONArray()
+                val searchStore = SearchSubscriptionStore(appContext)
+                val restoredSearches = mutableListOf<SearchSubscription>()
+                for (i in 0 until searches.length()) {
+                    val s = searches.optJSONObject(i) ?: continue
+                    val kw = s.optString("keyword").trim()
+                    if (kw.isNotBlank()) {
+                        restoredSearches.add(
+                            SearchSubscription(
+                                id = s.optString("id", "sub_search_$i"),
+                                keyword = kw,
+                                platform = s.optString("platform", "ALL"),
+                                min = s.optString("min"),
+                                max = s.optString("max"),
+                                url = s.optString("url"),
+                                createdAt = s.optLong("createdAt", System.currentTimeMillis()),
+                                lastSeenId = s.optString("last_seen_id", s.optString("lastSeenId")),
+                                listingCheckpointAt = s.optLong("listingCheckpointAt", s.optLong("latest_item_time", 0L)),
+                                lightningRefresh = s.optBoolean("lightningRefresh", false)
+                            )
+                        )
+                    }
+                }
+                if (restoredSearches.isNotEmpty()) {
+                    searchStore.restore(restoredSearches)
                 }
 
                 val role = json.optString("role", getRole())
@@ -598,6 +629,7 @@ class AccountStore private constructor(private val context: Context) {
                     ?: seenList.firstOrNull()
                     ?: ""
 
+                val checkpointAt = itemObj?.optLong("listingCheckpointAt", itemObj.optLong("rutenCheckpointAt", 0L)) ?: 0L
                 storesArray.put(JSONObject().apply {
                     put("url", shopUrl)
                     put("title", name)
@@ -605,6 +637,9 @@ class AccountStore private constructor(private val context: Context) {
                     put("platform", platform)
                     put("type", "store")
                     put("last_seen", lastSeen)
+                    put("listingCheckpointAt", checkpointAt)
+                    put("latest_item_time", checkpointAt)
+                    put("checkpoint", checkpointAt)
                     put("lightningRefresh", itemObj?.optBoolean("lightningRefresh", false) ?: false)
                 })
             }
@@ -627,6 +662,26 @@ class AccountStore private constructor(private val context: Context) {
                 })
             }
 
+            // 4. 關鍵字搜尋訂閱
+            val searchesArray = JSONArray()
+            val searchStore = SearchSubscriptionStore(appContext)
+            searchStore.list().forEach { s ->
+                searchesArray.put(JSONObject().apply {
+                    put("id", s.id)
+                    put("keyword", s.keyword)
+                    put("platform", s.platform)
+                    put("min", s.min)
+                    put("max", s.max)
+                    put("url", s.url)
+                    put("createdAt", s.createdAt)
+                    put("last_seen_id", s.lastSeenId)
+                    put("listingCheckpointAt", s.listingCheckpointAt)
+                    put("latest_item_time", s.listingCheckpointAt)
+                    put("checkpoint", s.listingCheckpointAt)
+                    put("lightningRefresh", s.lightningRefresh)
+                })
+            }
+
             // 合併相容 subscriptions
             val subsArray = JSONArray().apply {
                 for (i in 0 until prodsArray.length()) put(prodsArray.get(i))
@@ -639,6 +694,7 @@ class AccountStore private constructor(private val context: Context) {
                 put("stores", storesArray)
                 put("subscriptions", subsArray)
                 put("auctions", auctionsArray)
+                put("searches", searchesArray)
             }.toString()
 
             // 執行客戶端端到端 AES-256-GCM 加密，確保網路傳輸全程加密，中間人與代理無法外洩任何商品與賣場
@@ -651,6 +707,7 @@ class AccountStore private constructor(private val context: Context) {
                     put("stores_count", storesArray.length())
                     put("auctions_count", auctionsArray.length())
                     put("subscriptions_count", subsArray.length())
+                    put("searches_count", searchesArray.length())
                     put("fcm_token", getFcmToken())
                 }.toString()
             } else {

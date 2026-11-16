@@ -99,14 +99,14 @@ class RadarFirebaseMessagingService : FirebaseMessagingService() {
         val trackingNo = remoteMessage.data["tracking_no"] ?: ""
 
         val channelId = when (type) {
-            "subscription_update", "subscription" -> CHANNEL_SUBSCRIPTIONS
+            "subscription_update", "subscription", "search_subscription" -> CHANNEL_SUBSCRIPTIONS
             "auction_outbid", "auction" -> CHANNEL_AUCTIONS
             "logistics_update", "logistics" -> CHANNEL_LOGISTICS
             else -> CHANNEL_GENERAL
         }
 
         val targetTab = when (type) {
-            "subscription_update", "subscription" -> 1 // 訂閱
+            "subscription_update", "subscription", "search_subscription" -> 1 // 訂閱
             "auction_outbid", "auction" -> 2 // 競拍
             "logistics_update", "logistics" -> 3 // 工具
             else -> 4 // 關於

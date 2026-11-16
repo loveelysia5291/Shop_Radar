@@ -3,7 +3,14 @@
 import org.json.JSONObject
 import java.util.UUID
 
-internal data class AuctionAlertNotice(val url: String, val token: String, val title: String, val price: Long)
+internal data class AuctionAlertNotice(
+    val url: String,
+    val token: String,
+    val title: String,
+    val price: Long,
+    val alertText: String = "",
+    val alertKind: String = ""
+)
 
 /** Acknowledging a loss does not reset its bid-cycle identity. All fields survive app restarts. */
 internal object AuctionAlertPolicy {
@@ -21,8 +28,14 @@ internal object AuctionAlertPolicy {
             entry.optString("displayState") in setOf("ended", "cancelled")) return null
         val token = entry.optString("alertToken").ifBlank { legacyToken(entry) }
         if (entry.optString("acknowledgedAlertToken") == token) return null
-        return AuctionAlertNotice(entry.optString("url"), token, entry.optString("title"),
-            entry.optLong("alertPrice", entry.optLong("price")))
+        return AuctionAlertNotice(
+            url = entry.optString("url"),
+            token = token,
+            title = entry.optString("title"),
+            price = entry.optLong("alertPrice", entry.optLong("price")),
+            alertText = entry.optString("alert"),
+            alertKind = entry.optString("alertKind", "")
+        )
     }
 
     fun acknowledge(entry: JSONObject, token: String): Boolean {
@@ -109,11 +122,36 @@ internal object AuctionAlertPolicy {
             leadKey = ownLead.key()
             entry.put("leadKey", leadKey).put("leadPrice", ownLead.price).put("leadAt", ownLead.at)
         }
-        if (leadKey.isBlank() || leadKey == entry.optString("notifiedLeadKey") || snapshot.price <= entry.optLong("leadPrice")) return false
+        if (leadKey.isBlank() || leadKey == entry.optString("notifiedLeadKey") || snapshot.price <= entry.optLong("leadPrice")) {
+            val previousEndsAt = entry.optLong("endsAt", 0L)
+            val previousPrice = entry.optLong("price", 0L)
+            val previousBidCount = entry.optInt("bidCount", 0)
+
+            val isExtended = previousEndsAt > 0L && snapshot.endsAt > previousEndsAt
+            val isNearEnd = previousEndsAt > 0L && (previousEndsAt - snapshot.serverAt) in 0..(5 * 60 * 1000L)
+            val isSnipeBid = isNearEnd && (snapshot.price > previousPrice || snapshot.bidCount > previousBidCount)
+
+            if (isExtended && snapshot.endsAt != entry.optLong("lastNotifiedEndsAt", 0L) && entry.optBoolean("alertsEnabled", true)) {
+                entry.put("lastNotifiedEndsAt", snapshot.endsAt)
+                entry.put("alert", "⚠️【延後截標 · 有人壓線標】最新出價金額 NT$${snapshot.price} (共 ${snapshot.bidCount} 次出價)")
+                    .put("alertToken", UUID.randomUUID().toString()).put("alertAt", checkedAt).put("alertPrice", snapshot.price)
+                    .put("alertKind", "extension")
+                return true
+            }
+            if (isSnipeBid && snapshot.price != entry.optLong("lastNotifiedSnipePrice", 0L) && state != "leading" && entry.optBoolean("alertsEnabled", true)) {
+                entry.put("lastNotifiedSnipePrice", snapshot.price)
+                entry.put("alert", "⚠️【有人壓線標提醒】最新出價金額 NT$${snapshot.price} (共 ${snapshot.bidCount} 次出價)")
+                    .put("alertToken", UUID.randomUUID().toString()).put("alertAt", checkedAt).put("alertPrice", snapshot.price)
+                    .put("alertKind", "snipe")
+                return true
+            }
+            return false
+        }
         entry.put("notifiedLeadKey", leadKey).put("outbidOtherPrice", snapshot.price)
         if (!entry.optBoolean("alertsEnabled", true)) return false
         entry.put("alert", "你的出價已被超過，請開啟商品確認。")
             .put("alertToken", UUID.randomUUID().toString()).put("alertAt", checkedAt).put("alertPrice", snapshot.price)
+            .put("alertKind", "outbid")
         return true
     }
 

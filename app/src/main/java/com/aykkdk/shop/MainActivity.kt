@@ -819,6 +819,9 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             shopsPrefs.edit().putString(pendingShop, shop.toString()).commit()
         }
         shopsVersion++
+        if (complete) {
+            AccountStore.get(context).triggerCloudSync(context)
+        }
     }
     fun offerYahooConsent(capture: SearchCapture, message: String): Boolean {
         if (capture.market != Market.YAHOO || message != YahooConsentPolicy.MESSAGE) return false
@@ -1612,7 +1615,8 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                         }
                     }
                     item {
-                        if (!fetching) Button(onClick = {
+                        if (!fetching) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
                             focusManager.clearFocus(force = true)
                             keyboard?.hide()
                             when {
@@ -1655,7 +1659,30 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
                                     dispatch++
                                 }
                             }
-                        }, modifier = Modifier.fillMaxWidth()) { Text("搜尋商品") }
+                        }, modifier = Modifier.weight(1f)) { Text("搜尋商品") }
+                        OutlinedButton(
+                            enabled = query.trim().isNotBlank(),
+                            onClick = {
+                                if (!AccountStore.get(context).isLoggedIn()) {
+                                    warning = "請先登入專屬帳號以使用搜尋訂閱功能。"
+                                    return@OutlinedButton
+                                }
+                                val kw = query.trim()
+                                val sStore = SearchSubscriptionStore(context)
+                                val added = sStore.add(kw, selected, min, max)
+                                if (added) {
+                                    warning = "🔔 已成功訂閱關鍵字搜尋「$kw」！伺服器有新商品上架將發送推播。"
+                                    AccountStore.get(context).triggerCloudSync(context)
+                                } else {
+                                    warning = "已訂閱過相同的關鍵字「$kw」。"
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.NotificationsActive, contentDescription = null, Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("訂閱關鍵字")
+                        }
+                        }
                         if (!fetching && browserFallback) TextButton(onClick = {
                             currentMarket = Market.RUTEN.label
                             searchToken++; appliedQuery = query.trim(); appliedMin = min; appliedMax = max
@@ -1716,7 +1743,21 @@ private fun RadarApp(openAuctions: Int, foreground: Boolean,
             onSelectPage = { page -> selectResultsPage(page) },
 
             onSubscribe = { product -> warning = subscribeListing(context, product).takeIf { it.isNotBlank() } },
-            onOpen = { product -> runCatching { openListingDetails(context, product) { uriHandler.openUri(it) } }.onFailure { warning = "無法開啟連結。" } }
+            onOpen = { product -> runCatching { openListingDetails(context, product) { uriHandler.openUri(it) } }.onFailure { warning = "無法開啟連結。" } },
+            onSubscribeQuery = if (appliedQuery.isNotBlank()) { {
+                if (!AccountStore.get(context).isLoggedIn()) {
+                    warning = "請先登入專屬帳號以使用搜尋訂閱功能。"
+                } else {
+                    val sStore = SearchSubscriptionStore(context)
+                    val added = sStore.add(appliedQuery, selected, appliedMin, appliedMax)
+                    if (added) {
+                        warning = "🔔 已成功訂閱關鍵字搜尋「${appliedQuery}」！伺服器有新商品上架將發送推播。"
+                        AccountStore.get(context).triggerCloudSync(context)
+                    } else {
+                        warning = "已訂閱過相同的關鍵字「${appliedQuery}」。"
+                    }
+                }
+            } } else null
         )
         if (showSubscriptionProducts) key(subscriptionHistoryShop, subscriptionPageRequest) {
         SubscriptionProductsPage(productPageTitle, subscriptionProducts,
@@ -1973,6 +2014,53 @@ private fun AuctionScreen(modifier: Modifier, foreground: Boolean, refreshing: B
                         .onFailure { onWarning(it.message ?: "網址無效。") }
                 }) { Text("訂閱競拍") }
             }
+            Spacer(Modifier.height(8.dp))
+            var isMonitoring by remember { mutableStateOf(store.isMonitoring()) }
+            val lastWebUpdate = store.getLastWebUpdate()
+            val nextSeconds = if (isMonitoring) {
+                val elapsed = (now - lastWebUpdate).coerceAtLeast(0L)
+                ((60_000L - elapsed) / 1000L).coerceIn(0L, 60L)
+            } else 0L
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (isMonitoring) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (isMonitoring) "⚡ 競標監測：已啟動" else "⚡ 競標監測：未開啟",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isMonitoring) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            if (isMonitoring) "每 1 分鐘閃刷 · 下次刷新：${nextSeconds} 秒 (網頁更新自動延後)"
+                            else "點擊開啟後每 1 分鐘自動刷新網頁，其餘時間若網頁更新將自動延後",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isMonitoring) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            val nextState = !isMonitoring
+                            store.setMonitoring(nextState)
+                            if (nextState) store.recordWebUpdate(System.currentTimeMillis())
+                            isMonitoring = nextState
+                            version++
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isMonitoring) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Text(if (isMonitoring) "停止監測" else "開始監測")
+                    }
+                }
+            }
             }
             }
         }
@@ -2191,7 +2279,8 @@ private fun SearchResultsPage(
     feedPaused: Boolean, onConsumed: (Int) -> Unit,
     canRetry: Boolean, onStop: () -> Unit, onRetry: () -> Unit, onLoadMore: () -> Unit,
     onBack: () -> Unit, onSelectPage: (Int) -> Unit,
-    onSubscribe: (Product) -> Unit, onOpen: (Product) -> Unit
+    onSubscribe: (Product) -> Unit, onOpen: (Product) -> Unit,
+    onSubscribeQuery: (() -> Unit)? = null
 ) {
     var pagesExpanded by remember { mutableStateOf(false) }
     var manualRefreshing by remember { mutableStateOf(false) }
@@ -2217,6 +2306,11 @@ private fun SearchResultsPage(
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, backLabel) }
                     Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (onSubscribeQuery != null) {
+                        IconButton(onClick = onSubscribeQuery) {
+                            Icon(Icons.Default.NotificationsActive, "訂閱此關鍵字搜尋")
+                        }
+                    }
                     if (manualRefreshing && fetching && !feedPaused) IconButton(onClick = onStop,
                         modifier = Modifier.semantics { contentDescription = "停止載入" }) {
                         CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -2660,6 +2754,56 @@ private fun ShopSubscriptions(modifier: Modifier, version: Int, refreshing: Bool
                             }
                         }
                     } }
+        }
+        val searchStore = remember { SearchSubscriptionStore(context) }
+        val searchSubs = remember(localVersion) { searchStore.list() }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            SubscriptionSection("關鍵字搜尋訂閱", "未訂閱任何搜尋關鍵字。可在「搜尋商品」輸入關鍵字（如：手機零件機）後點擊「訂閱關鍵字」以追蹤新商品。".takeIf { searchSubs.isEmpty() })
+        }
+        items(searchSubs, key = { "search:${it.id}" }) { s ->
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                "🔍 關鍵字：${s.keyword}",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                        Text(
+                            when (s.platform.uppercase()) {
+                                "RUTEN" -> "露天拍賣"
+                                "CAROUSELL" -> "旋轉拍賣"
+                                "YAHOO" -> "Yahoo拍賣"
+                                "BBOBO" -> "跳蚤本舖"
+                                else -> "全部平台"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                    if (s.min.isNotBlank() || s.max.isNotBlank()) {
+                        Text("價格範圍：NT$${s.min.ifBlank { "0" }} ~ ${s.max.ifBlank { "無上限" }}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("🔔 上架新商品時伺服器自動發送推播通知", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = {
+                            searchStore.remove(s.id)
+                            localVersion++
+                            AccountStore.get(context).triggerCloudSync(context)
+                            onWarning("已取消關鍵字「${s.keyword}」訂閱。")
+                        }) {
+                            Text("取消訂閱", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
         }
     }
     if (resolvingLink) SearchProgressDialog("正在辨識平台及解析網址…") {
